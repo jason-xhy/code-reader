@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Reader</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand-row">
+        <div>
+          <div class="brand">CODE READER</div>
+          <div class="brand-subtitle">Git 源码阅读器</div>
+        </div>
+        <button id="open-menu" class="button primary" type="button">打开</button>
+      </div>
+      <div class="sidebar-tools">
+        <label class="search-label" for="tree-filter">代码树</label>
+        <input id="tree-filter" type="search" placeholder="过滤文件…" autocomplete="off" disabled>
+      </div>
+      <nav id="file-tree" class="file-tree" aria-label="代码树">
+        <div class="empty-tree">打开一个本地或远程 Git 仓库</div>
+      </nav>
+      <div class="sidebar-footer">
+        <span id="file-count">0 个文件</span>
+        <button id="llm-status" class="llm-settings-button" type="button" title="配置模型与 API Key">LLM 设置</button>
+      </div>
+    </aside>
+
+    <main class="reader">
+      <header class="topbar">
+        <div class="file-heading">
+          <span id="current-file" class="current-file">尚未选择文件</span>
+          <span id="source-status" class="source-status"></span>
+        </div>
+        <div class="repository-heading">
+          <strong id="repository-name">未打开仓库</strong>
+          <span id="repository-branch" class="meta-badge">分支 —</span>
+          <span id="lsp-badge" class="meta-badge lsp-badge" title="语言服务器状态">LSP —</span>
+          <span id="repository-tags" class="tags">Tag —</span>
+        </div>
+      </header>
+      <section id="code-area" class="code-area" aria-label="源码">
+        <div id="code-empty" class="code-empty">
+          <div class="empty-mark">&lt;/&gt;</div>
+          <h1>从代码树选择一个文件</h1>
+          <p>光标移动即可查看行提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用，<kbd>Ctrl-t</kbd> 跳回，<kbd>\c</kbd> 就当前行提问。</p>
+          <p>编辑器为完整 Vim 模式（<kbd>i</kbd>/<kbd>Esc</kbd> 切换，<kbd>/</kbd> 搜索，<kbd>u</kbd> 撤销）；修改仅保存在内存，不会写回磁盘。</p>
+        </div>
+        <div id="editor-host" class="editor-host" tabindex="0" hidden>
+          <div id="editor" class="editor"></div>
+          <div id="quickpick" class="quickpick" hidden></div>
+          <div class="statusbar">
+            <span id="vim-mode" class="vim-mode">--NORMAL--</span>
+            <span id="cursor-pos" class="cursor-pos">1:1</span>
+            <span id="editor-note" class="editor-note">Vim 模式 · gd 跳定义 · gr 跳引用 · Ctrl-t 跳回 · \c 提问 · 修改仅内存</span>
+            <span id="lsp-state" class="lsp-state">LSP 未检测</span>
+          </div>
+        </div>
+        <div id="question-editor" class="question-editor" hidden>
+          <div class="question-heading">
+            <strong id="question-anchor">第 1 行</strong>
+            <span>源码上下文将发送给所配置的 LLM 服务</span>
+          </div>
+          <label class="sr-only" for="question-input">想问的问题</label>
+          <textarea id="question-input" rows="3" maxlength="4000" placeholder="输入想问的问题…"></textarea>
+          <div id="question-error" class="inline-error" role="alert"></div>
+          <div class="question-actions">
+            <span>Esc 取消</span>
+            <button id="question-cancel" class="button" type="button">取消</button>
+            <button id="question-submit" class="button primary" type="button">确定</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="insights">
+      <section class="insight-section history-section">
+        <div class="section-heading">
+          <h2>行提交历史</h2>
+          <span id="history-anchor" class="section-anchor">悬停源码行</span>
+        </div>
+        <div id="history-content" class="insight-content empty-insight">显示该行最近的 5 次变更</div>
+      </section>
+      <section class="insight-section explanation-section">
+        <div class="section-heading">
+          <h2>代码解释</h2>
+          <span id="explanation-anchor" class="section-anchor"></span>
+        </div>
+        <div id="explanation-content" class="insight-content empty-insight">
+          在任意源码行按 <kbd>c</kbd>，输入问题并点击“确定”。
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <dialog id="open-dialog" class="open-dialog">
+    <div class="dialog-heading">
+      <div>
+        <h2>打开代码仓库</h2>
+        <p>读取本地仓库，或克隆一个远程 Git 仓库。</p>
+      </div>
+      <button id="dialog-close" class="icon-button" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="dialog-tabs" role="tablist">
+      <button id="local-tab" class="dialog-tab active" type="button" role="tab" aria-selected="true">本地仓库</button>
+      <button id="remote-tab" class="dialog-tab" type="button" role="tab" aria-selected="false">远程仓库</button>
+    </div>
+    <form id="open-form">
+      <div id="local-panel" class="dialog-panel">
+        <label for="local-path">本地 Git 仓库绝对路径</label>
+        <input id="local-path" type="text" placeholder="/Users/you/project" autocomplete="off" spellcheck="false">
+        <p class="field-help">也可输入仓库内的子目录；应用不会修改源码或分支。</p>
+      </div>
+      <div id="remote-panel" class="dialog-panel" hidden>
+        <label for="remote-url">远程 Git 仓库地址</label>
+        <input id="remote-url" type="text" placeholder="https://github.com/user/repository.git" autocomplete="off" spellcheck="false">
+        <p class="field-help">支持 HTTPS、SSH、scp 风格和 file://；私有仓库使用系统 Git 凭据。</p>
+      </div>
+      <div id="open-error" class="dialog-error" role="alert"></div>
+      <div class="dialog-actions">
+        <span id="open-progress"></span>
+        <button id="open-submit" class="button primary" type="submit">打开</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="llm-dialog" class="open-dialog llm-dialog">
+    <div class="dialog-heading">
+      <div>
+        <h2>LLM 设置</h2>
+        <p>选择厂商和模型，API Key 仅保存到 macOS 钥匙串。</p>
+      </div>
+      <button id="llm-dialog-close" class="icon-button" type="button" aria-label="关闭">×</button>
+    </div>
+    <form id="llm-form" class="llm-form">
+      <div class="llm-field">
+        <label for="llm-provider">模型厂商</label>
+        <select id="llm-provider" required></select>
+      </div>
+      <div class="llm-field">
+        <label for="llm-model">模型</label>
+        <select id="llm-model" required></select>
+        <input id="llm-custom-model" type="text" placeholder="输入模型 ID" maxlength="200" spellcheck="false" hidden>
+      </div>
+      <div class="llm-field">
+        <label for="llm-base-url">OpenAI 兼容 API 地址</label>
+        <input id="llm-base-url" type="url" readonly required>
+      </div>
+      <div class="llm-field">
+        <label for="llm-api-key">API Key</label>
+        <input id="llm-api-key" type="password" placeholder="输入该厂商的 API Key" maxlength="4096" autocomplete="new-password">
+        <p id="llm-key-help" class="field-help">保存前会用该 Key 请求模型服务验证连通性；保存后无法从页面读回，留空则保留钥匙串中已有 Key。</p>
+      </div>
+      <p id="llm-env-warning" class="llm-env-warning" hidden>检测到环境变量配置，环境变量优先于本页面保存的选择。</p>
+      <div id="llm-error" class="dialog-error" role="alert"></div>
+      <div class="dialog-actions">
+        <span id="llm-save-progress"></span>
+        <button id="llm-save" class="button primary" type="submit">保存设置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/vendor/ace/ace.js"></script>
+  <script src="/vendor/ace/keybinding-vim.js"></script>
+  <script src="/vendor/ace/theme/theme-tomorrow_night.js"></script>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "code-reader",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local Git source reader with line history and LLM explanations",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check src/errors.js && node --check src/git.js && node --check src/repositories.js && node --check src/keychain.js && node --check src/llm-config.js && node --check src/llm.js && node --check src/compile-db.js && node --check src/lsp.js && node --check public/app.js && node --check public/editor.js && node --check public/llm-settings.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
