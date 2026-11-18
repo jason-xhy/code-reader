@@ -317,6 +317,8 @@ try {
   const bundleText = await bundle.text();
   assert(bundle.status === 200 && bundleText.includes('createEditor'), 'CM6 预构建包可访问');
   assert(bundleText.includes('gruvbox') && bundleText.includes('tokyonight'), 'CM6 包包含主题调色板');
+  const editorSource = readFileSync(path.join(repoRoot, 'web-src/editor.js'), 'utf8');
+  assert(editorSource.includes("binding.key !== 'Mod-i'"), 'Vim Ctrl-i 不被 CodeMirror selectParentSyntax 覆盖');
   assert(!html.includes('/vendor/ace/ace.js'), '首页不再加载 Ace');
 } catch (error) {
   fail(`未捕获异常：${error.stack || error.message}`);
