@@ -1,3 +1,5 @@
+// one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: Git 操作层与 code-reader API 强绑定
+// grill: 成品检索=skill 库无 code-reader Git 操作成品; 输入固定=仓库路径+固定 git 参数; 步骤机械=按 API 组装 git 命令; 判读固定=解析 porcelain/for-each-ref 输出; 失效场景=构造不出（仅本应用）
 import { spawn } from 'node:child_process';
 import { realpath, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -6,6 +8,24 @@ import { AppError } from './errors.js';
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_GIT_OUTPUT = 32 * 1024 * 1024;
+const NETWORK_ENV = {
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_SSH_COMMAND: 'ssh -o BatchMode=yes',
+  GIT_ASKPASS: 'true',
+  SSH_ASKPASS: 'true',
+};
+const BRANCH_FORMAT = '%(refname)%00%(refname:short)%00%(HEAD)%00%(upstream:short)';
+const CODE_READER_STASH_PREFIX = 'code-reader:';
+
+function isCodeReaderStash(subject) {
+  return String(subject || '').includes(CODE_READER_STASH_PREFIX);
+}
+
+function stashMessage(subject) {
+  const text = String(subject || '');
+  const index = text.indexOf(CODE_READER_STASH_PREFIX);
+  return index === -1 ? text : text.slice(index + CODE_READER_STASH_PREFIX.length).trim();
+}
 
 function cleanMessage(value) {
   return String(value || '')
@@ -175,20 +195,275 @@ export async function lineHistory(root, filePath, line) {
   } catch {
     throw new AppError('未跟踪文件没有提交历史', 400, 'UNTRACKED_FILE');
   }
+  // git log -L 在 kernel 等大仓上需要分钟级时间（实测 linux-next 单行 >120s），
+  // 改用 blame：只回答“这一行最后一次由哪个提交引入”，内核仓约 2-3 秒返回。
   const output = await runGit([
-    'log',
-    '--no-patch',
-    '--pretty=format:%h%x20%s',
-    '-n', '5',
-    '-L', `${line},${line}:${filePath}`,
+    'blame',
+    '--line-porcelain',
+    '-L', `${line},${line}`,
+    '--', filePath,
   ], { cwd: root, timeout: 45_000 });
-  return output.split('\n').filter(Boolean).map((entry) => {
-    const separator = entry.indexOf(' ');
-    return {
-      hash: separator === -1 ? entry : entry.slice(0, separator),
-      subject: separator === -1 ? '' : entry.slice(separator + 1),
-    };
+  const lines = output.split('\n');
+  const header = /^([0-9a-f]{40}) \d+ \d+/.exec(lines[0] || '');
+  if (!header) return [];
+  if (/^0+$/.test(header[1])) {
+    return [{ hash: '0000000', subject: '未提交的工作区修改' }];
+  }
+  const summary = lines.find((entry) => entry.startsWith('summary '));
+  return [{
+    hash: header[1].slice(0, 10),
+    subject: summary ? summary.slice('summary '.length) : '',
+  }];
+}
+
+async function stashEntries(root) {
+  const output = await runGit(['stash', 'list', '--format=%gd%x00%H%x00%gs'], { cwd: root });
+  return output.split('\n').filter(Boolean).map((line) => {
+    const [ref, sha, subject] = line.split('\0');
+    return { ref, sha, subject: subject || '' };
   });
+}
+
+async function createStash(root, message, files, includeUntracked = false) {
+  const args = ['stash', 'push', '-m', message];
+  if (includeUntracked) args.push('--include-untracked');
+  await runGit(args, { cwd: root, timeout: 180_000 });
+  const sha = (await runGit(['rev-parse', '--verify', 'stash@{0}'], { cwd: root })).trim();
+  return { sha, files, message };
+}
+
+async function popStashEntry(root, entry) {
+  await runGit(['stash', 'pop', entry.ref], { cwd: root, timeout: 120_000 });
+}
+
+async function restoreStashes(root, stashes) {
+  for (const stash of [...stashes].reverse()) {
+    const entries = await stashEntries(root);
+    const entry = entries.find((candidate) => candidate.sha === stash.sha);
+    if (!entry) continue;
+    try {
+      await popStashEntry(root, entry);
+    } catch {
+      // 恢复失败的暂存保留在 stash 列表中，由界面继续提示
+    }
+  }
+}
+
+export async function listCodeReaderStashes(root) {
+  const entries = await stashEntries(root);
+  return entries
+    .filter((entry) => isCodeReaderStash(entry.subject))
+    .map((entry) => ({
+      sha: entry.sha,
+      ref: entry.ref,
+      message: stashMessage(entry.subject),
+    }));
+}
+
+export async function popCodeReaderStash(root, sha) {
+  if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha)) {
+    throw new AppError('暂存标识无效', 400, 'INVALID_STASH');
+  }
+  const entries = await stashEntries(root);
+  const entry = entries.find((candidate) => candidate.sha === sha);
+  if (!entry || !isCodeReaderStash(entry.subject)) {
+    throw new AppError('暂存不存在或不属于本应用', 404, 'STASH_NOT_FOUND');
+  }
+  await popStashEntry(root, entry);
+  return { sha, message: stashMessage(entry.subject) };
+}
+
+export async function listBranches(root) {
+  const [localRaw, remoteRaw] = await Promise.all([
+    runGit(['for-each-ref', `--format=${BRANCH_FORMAT}`, 'refs/heads'], { cwd: root }),
+    runGit(['for-each-ref', `--format=${BRANCH_FORMAT}`, 'refs/remotes'], { cwd: root }),
+  ]);
+  const parse = (raw, type) => raw.split('\n').filter(Boolean).map((line) => {
+    const [refname, name, head, upstream] = line.split('\0');
+    return {
+      refname,
+      name,
+      type,
+      current: head === '*',
+      upstream: upstream || '',
+      ahead: 0,
+      behind: 0,
+    };
+  }).filter((branch) => branch.name && !branch.name.endsWith('/HEAD'));
+
+  const locals = parse(localRaw, 'local');
+  const localNames = new Set(locals.map((branch) => branch.name));
+  const remotes = parse(remoteRaw, 'remote').map((branch) => {
+    const localName = branch.name.split('/').slice(1).join('/');
+    return { ...branch, localName, hasLocal: Boolean(localName) && localNames.has(localName) };
+  });
+  // %(upstream:track) 会为每个分支做一次 revision walk，kernel 仓 150 分支实测 19s；
+  // 只对当前分支算一次 ahead/behind（rev-list 走 commit-graph，通常 <0.2s）。
+  const current = locals.find((branch) => branch.current) || null;
+  if (current && current.upstream) {
+    try {
+      const counts = (await runGit(['rev-list', '--left-right', '--count', `${current.upstream}...HEAD`], { cwd: root }))
+        .trim().split(/\s+/).map(Number);
+      current.behind = counts[0] || 0;
+      current.ahead = counts[1] || 0;
+    } catch {
+      // 上游引用可能已失效，保留 0
+    }
+  }
+  locals.sort((a, b) => Number(b.current) - Number(a.current) || a.name.localeCompare(b.name));
+  remotes.sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    current: current?.name || null,
+    branches: [...locals, ...remotes],
+  };
+}
+
+export async function checkoutBranch(root, target) {
+  if (typeof target !== 'string' || !target.trim() || target.length > 255 || target.startsWith('-') || /[\s\0]/.test(target)) {
+    throw new AppError('分支名无效', 400, 'INVALID_BRANCH');
+  }
+  const { branches } = await listBranches(root);
+  const local = branches.find((branch) => branch.type === 'local' && branch.name === target);
+  const remote = local ? null : branches.find((branch) => branch.type === 'remote' && branch.name === target);
+  if (!local && !remote) throw new AppError('分支不存在', 400, 'BRANCH_NOT_FOUND');
+  if (!local && !remote.hasLocal && remote.localName.startsWith('-')) {
+    throw new AppError('无法为该远程分支创建本地分支', 400, 'INVALID_BRANCH');
+  }
+
+  const checkoutTarget = local
+    ? local.name
+    : (remote.hasLocal ? remote.localName : remote.name);
+  const args = local || remote.hasLocal
+    ? ['checkout', checkoutTarget]
+    : ['checkout', '-b', remote.localName, '--track', remote.name];
+
+  const status = await runGit(['status', '--porcelain', '--untracked-files=no'], { cwd: root });
+  const dirtyFiles = status.split('\n').filter(Boolean).length;
+  const stashes = [];
+  if (dirtyFiles > 0) {
+    stashes.push(await createStash(root, `${CODE_READER_STASH_PREFIX} 切换分支前自动暂存（${dirtyFiles} 个文件）`, dirtyFiles));
+  }
+
+  try {
+    await runGit(args, { cwd: root, timeout: 120_000 });
+    return { branch: checkoutTarget, stashes };
+  } catch (firstError) {
+    let untracked = [];
+    try {
+      untracked = (await runGit(['ls-files', '--others', '--exclude-standard', '-z'], { cwd: root }))
+        .split('\0').filter(Boolean);
+    } catch {
+      untracked = [];
+    }
+    if (untracked.length > 0 && untracked.length <= 200) {
+      try {
+        stashes.push(await createStash(root, `${CODE_READER_STASH_PREFIX} 切换分支前自动暂存未跟踪文件（${untracked.length} 个）`, untracked.length, true));
+        await runGit(args, { cwd: root, timeout: 120_000 });
+        return { branch: checkoutTarget, stashes };
+      } catch (retryError) {
+        await restoreStashes(root, stashes);
+        throw retryError;
+      }
+    }
+    await restoreStashes(root, stashes);
+    throw firstError;
+  }
+}
+
+export async function syncRepository(root) {
+  await runGit(['fetch', '--all', '--prune'], { cwd: root, timeout: 300_000, env: NETWORK_ENV });
+  let upstream;
+  try {
+    upstream = (await runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { cwd: root })).trim();
+  } catch {
+    return { action: 'no-upstream', ahead: 0, behind: 0, upstream: '' };
+  }
+  if (!upstream) return { action: 'no-upstream', ahead: 0, behind: 0, upstream: '' };
+  const counts = (await runGit(['rev-list', '--left-right', '--count', '@{upstream}...HEAD'], { cwd: root }))
+    .trim().split(/\s+/).map(Number);
+  const behind = counts[0] || 0;
+  const ahead = counts[1] || 0;
+  const headBefore = (await runGit(['rev-parse', 'HEAD'], { cwd: root })).trim();
+  if (behind === 0) return { action: 'up-to-date', ahead, behind, upstream, headChanged: false };
+  if (ahead > 0) return { action: 'diverged', ahead, behind, upstream, headChanged: false };
+  const dirty = (await runGit(['status', '--porcelain', '--untracked-files=no'], { cwd: root })).trim();
+  if (dirty) return { action: 'dirty', ahead, behind, upstream, headChanged: false };
+  try {
+    await runGit(['merge', '--ff-only', '@{upstream}'], { cwd: root, timeout: 120_000 });
+  } catch (error) {
+    return { action: 'error', ahead, behind, upstream, headChanged: false, message: error.message };
+  }
+  const headAfter = (await runGit(['rev-parse', 'HEAD'], { cwd: root })).trim();
+  return { action: 'fast-forwarded', ahead, behind, upstream, headChanged: headBefore !== headAfter };
+}
+
+export async function repositoryStatus(root) {
+  try {
+    const output = await runGit(['status', '--porcelain', '-z', '--untracked-files=normal'], {
+      cwd: root,
+      timeout: 15_000,
+      maxOutput: 8 * 1024 * 1024,
+    });
+    const tokens = output.split('\0');
+    const status = {};
+    for (let index = 0; index < tokens.length; index += 1) {
+      const entry = tokens[index];
+      if (entry.length < 4) continue;
+      const code = entry.slice(0, 2);
+      const filePath = entry.slice(3);
+      if (code[0] === 'R' || code[0] === 'C') index += 1;
+      status[filePath] = code.trim() || '?';
+    }
+    return status;
+  } catch {
+    return {};
+  }
+}
+
+export async function commitDetails(root, hash) {
+  if (typeof hash !== 'string' || !/^[0-9a-f]{7,40}$/i.test(hash)) {
+    throw new AppError('提交号无效', 400, 'INVALID_COMMIT');
+  }
+  const metaOutput = await runGit([
+    'show',
+    '-s',
+    '--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%B',
+    hash,
+    '--',
+  ], { cwd: root, timeout: 30_000 });
+  const parts = metaOutput.split('\0');
+  if (parts.length < 6) throw new AppError('无法读取提交信息', 400, 'INVALID_COMMIT');
+  const [fullHash, shortHash, author, email, date] = parts;
+  const message = parts.slice(5).join('\0').trim();
+  const numstat = await runGit(['show', '--numstat', '--format=', '--no-renames', hash, '--'], {
+    cwd: root,
+    timeout: 60_000,
+  });
+  const files = numstat.split('\n').filter(Boolean).map((line) => {
+    const [added, deleted, filePath] = line.split('\t');
+    return {
+      path: filePath || '',
+      added: Number(added) || 0,
+      deleted: Number(deleted) || 0,
+    };
+  }).filter((entry) => entry.path);
+  const patch = await runGit(['show', '--format=', '--no-color', '--patch', hash, '--'], {
+    cwd: root,
+    timeout: 60_000,
+    maxOutput: 8 * 1024 * 1024,
+  });
+  const limit = 200 * 1024;
+  return {
+    hash: fullHash,
+    short: shortHash,
+    author,
+    email,
+    date,
+    message,
+    files,
+    diff: patch.length > limit ? patch.slice(0, limit) : patch,
+    truncated: patch.length > limit,
+  };
 }
 
 export async function cloneRepository(url, destination) {

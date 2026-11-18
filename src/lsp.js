@@ -1,8 +1,10 @@
+// one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: LSP 会话管理与 code-reader 仓库模型强绑定
+// grill: 成品检索=skill 库无 code-reader LSP 成品; 输入固定=仓库对象/JSON-RPC 固定方法; 步骤机械=启动/同步文档/请求/重置; 判读固定=LSP 标准 result 结构; 失效场景=构造不出（仅本应用）
 import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { AppError } from './errors.js';
 import { listSourceFiles, readSource } from './git.js';
-import { prepareCompilationDatabase } from './compile-db.js';
+import { clearCompilationDatabase, prepareCompilationDatabase } from './compile-db.js';
 
 const REQUEST_TIMEOUT = 60_000;
 const MAX_OPEN_DOCUMENTS = 200;
@@ -294,6 +296,15 @@ class LspSession {
       textDocument: { uri, languageId, version: 1, text },
     });
   }
+stop() {
+    this.client?.stop();
+    this.client = null;
+    this.engine = null;
+    this.failed = null;
+    this.initPromise = null;
+    this.openDocuments.clear();
+    this.openDocumentsVersions.clear();
+  }
 }
 
 function normalizeLocations(result, root) {
@@ -324,6 +335,15 @@ const sessions = new Map();
 function sessionFor(repository) {
   if (!sessions.has(repository.id)) sessions.set(repository.id, new LspSession(repository));
   return sessions.get(repository.id);
+}
+
+export async function resetLspSession(repositoryId) {
+  const session = sessions.get(repositoryId);
+  if (session) {
+    session.stop();
+    sessions.delete(repositoryId);
+  }
+  await clearCompilationDatabase(repositoryId);
 }
 
 export function lspStatus(repository) {

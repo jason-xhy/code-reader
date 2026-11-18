@@ -15,7 +15,11 @@
           <div class="brand">CODE READER</div>
           <div class="brand-subtitle">Git 源码阅读器</div>
         </div>
-        <button id="open-menu" class="button primary" type="button">打开</button>
+        <div class="open-group">
+          <button id="open-menu" class="button primary" type="button">打开</button>
+          <button id="history-menu-button" class="button history-button" type="button" title="阅读历史">历史</button>
+          <div id="history-menu" class="history-menu" hidden></div>
+        </div>
       </div>
       <div class="sidebar-tools">
         <label class="search-label" for="tree-filter">代码树</label>
@@ -26,9 +30,14 @@
       </nav>
       <div class="sidebar-footer">
         <span id="file-count">0 个文件</span>
-        <button id="llm-status" class="llm-settings-button" type="button" title="配置模型与 API Key">LLM 设置</button>
+        <div class="footer-actions">
+          <button id="docs-settings" class="llm-settings-button" type="button" title="配置规范与文档目录">知识库</button>
+          <button id="llm-status" class="llm-settings-button" type="button" title="配置模型与 API Key">LLM 设置</button>
+        </div>
       </div>
     </aside>
+
+    <div id="splitter-left" class="splitter" role="separator" aria-orientation="vertical" title="拖动调整文件树宽度"></div>
 
     <main class="reader">
       <header class="topbar">
@@ -38,17 +47,26 @@
         </div>
         <div class="repository-heading">
           <strong id="repository-name">未打开仓库</strong>
-          <span id="repository-branch" class="meta-badge">分支 —</span>
+          <select id="branch-select" class="branch-select" title="切换分支" aria-label="切换分支" disabled>
+            <option value="">分支 —</option>
+          </select>
+          <button id="sync-button" class="button small" type="button" title="git fetch 后仅快进合并远程更新" disabled>更新</button>
+          <select id="theme-select" class="theme-select" title="Vim 配色主题" aria-label="配色主题"></select>
           <span id="lsp-badge" class="meta-badge lsp-badge" title="语言服务器状态">LSP —</span>
           <span id="repository-tags" class="tags">Tag —</span>
         </div>
       </header>
+      <div id="repo-notice" class="repo-notice" hidden>
+        <span id="repo-notice-text"></span>
+        <button id="repo-notice-action" class="button small" type="button" hidden>恢复修改</button>
+        <button id="repo-notice-close" class="icon-button notice-close" type="button" aria-label="关闭">×</button>
+      </div>
       <section id="code-area" class="code-area" aria-label="源码">
         <div id="code-empty" class="code-empty">
           <div class="empty-mark">&lt;/&gt;</div>
           <h1>从代码树选择一个文件</h1>
-          <p>光标移动即可查看行提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用，<kbd>Ctrl-t</kbd> 跳回，<kbd>\c</kbd> 就当前行提问。</p>
-          <p>编辑器为完整 Vim 模式（<kbd>i</kbd>/<kbd>Esc</kbd> 切换，<kbd>/</kbd> 搜索，<kbd>u</kbd> 撤销）；修改仅保存在内存，不会写回磁盘。</p>
+          <p>光标移动即可查看行提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用，<kbd>Ctrl-o</kbd> 跳回，<kbd>\c</kbd> 就当前行提问。</p>
+          <p>编辑器为完整 Vim 模式（<kbd>i</kbd>/<kbd>Esc</kbd> 切换，<kbd>/</kbd> 搜索，<kbd>u</kbd> 撤销，<kbd>:help</kbd> 查看全部快捷键）；修改仅保存在内存，不会写回磁盘。</p>
         </div>
         <div id="editor-host" class="editor-host" tabindex="0" hidden>
           <div id="editor" class="editor"></div>
@@ -56,14 +74,14 @@
           <div class="statusbar">
             <span id="vim-mode" class="vim-mode">--NORMAL--</span>
             <span id="cursor-pos" class="cursor-pos">1:1</span>
-            <span id="editor-note" class="editor-note">Vim 模式 · gd 跳定义 · gr 跳引用 · Ctrl-t 跳回 · \c 提问 · 修改仅内存</span>
+            <span id="editor-note" class="editor-note">Vim 模式 · gd 跳定义 · gr 跳引用 · Ctrl-o 跳回 · \c 提问 · :help 快捷键 · 修改仅内存</span>
             <span id="lsp-state" class="lsp-state">LSP 未检测</span>
           </div>
         </div>
         <div id="question-editor" class="question-editor" hidden>
           <div class="question-heading">
             <strong id="question-anchor">第 1 行</strong>
-            <span>源码上下文将发送给所配置的 LLM 服务</span>
+            <span>源码上下文将发送给 LLM · Enter 提交 · Shift+Enter 换行</span>
           </div>
           <label class="sr-only" for="question-input">想问的问题</label>
           <textarea id="question-input" rows="3" maxlength="4000" placeholder="输入想问的问题…"></textarea>
@@ -77,13 +95,26 @@
       </section>
     </main>
 
+    <div id="splitter-right" class="splitter" role="separator" aria-orientation="vertical" title="拖动调整解释栏宽度"></div>
+
     <aside class="insights">
+      <div class="insights-bar">
+        <span>分析与解释</span>
+        <button id="insights-toggle" class="icon-button panel-toggle" type="button" title="收起解释栏">⟩</button>
+      </div>
       <section class="insight-section history-section">
         <div class="section-heading">
           <h2>行提交历史</h2>
           <span id="history-anchor" class="section-anchor">悬停源码行</span>
         </div>
-        <div id="history-content" class="insight-content empty-insight">显示该行最近的 5 次变更</div>
+        <div id="history-content" class="insight-content empty-insight">显示该行最后一次变更</div>
+      </section>
+      <section id="faq-section" class="insight-section faq-section" hidden>
+        <div class="section-heading">
+          <h2>代码 FAQ</h2>
+          <span id="faq-anchor" class="section-anchor"></span>
+        </div>
+        <div id="faq-content" class="insight-content"></div>
       </section>
       <section class="insight-section explanation-section">
         <div class="section-heading">
@@ -91,10 +122,11 @@
           <span id="explanation-anchor" class="section-anchor"></span>
         </div>
         <div id="explanation-content" class="insight-content empty-insight">
-          在任意源码行按 <kbd>c</kbd>，输入问题并点击“确定”。
+          在任意源码行按 <kbd>c</kbd>，输入问题后按 <kbd>Enter</kbd> 提交。
         </div>
       </section>
     </aside>
+    <button id="insights-expand" class="insights-expand" type="button" title="展开解释栏" hidden>⟨</button>
   </div>
 
   <dialog id="open-dialog" class="open-dialog">
@@ -112,7 +144,19 @@
     <form id="open-form">
       <div id="local-panel" class="dialog-panel">
         <label for="local-path">本地 Git 仓库绝对路径</label>
-        <input id="local-path" type="text" placeholder="/Users/you/project" autocomplete="off" spellcheck="false">
+        <div class="path-row">
+          <input id="local-path" type="text" placeholder="/Users/you/project" autocomplete="off" spellcheck="false">
+          <button id="browse-button" class="button" type="button">浏览…</button>
+        </div>
+        <div id="dir-browser" class="dir-browser" hidden>
+          <div class="dir-browser-bar">
+            <button id="dir-up" class="button small" type="button" title="上级目录">↑</button>
+            <span id="dir-path" class="dir-path"></span>
+            <button id="dir-pick" class="button primary small" type="button">选择此目录</button>
+          </div>
+          <div id="dir-list" class="dir-list"></div>
+          <div id="dir-error" class="inline-error" role="alert"></div>
+        </div>
         <p class="field-help">也可输入仓库内的子目录；应用不会修改源码或分支。</p>
       </div>
       <div id="remote-panel" class="dialog-panel" hidden>
@@ -132,7 +176,7 @@
     <div class="dialog-heading">
       <div>
         <h2>LLM 设置</h2>
-        <p>选择厂商和模型，API Key 仅保存到 macOS 钥匙串。</p>
+        <p>选择厂商和模型，API Key 仅保存到系统密钥环（macOS 钥匙串 / Linux Secret Service）。</p>
       </div>
       <button id="llm-dialog-close" class="icon-button" type="button" aria-label="关闭">×</button>
     </div>
@@ -147,13 +191,21 @@
         <input id="llm-custom-model" type="text" placeholder="输入模型 ID" maxlength="200" spellcheck="false" hidden>
       </div>
       <div class="llm-field">
-        <label for="llm-base-url">OpenAI 兼容 API 地址</label>
+        <label for="llm-base-url">API 地址</label>
         <input id="llm-base-url" type="url" readonly required>
+      </div>
+      <div class="llm-field" id="llm-protocol-field" hidden>
+        <label for="llm-protocol">API 协议</label>
+        <select id="llm-protocol">
+          <option value="openai">OpenAI 兼容（/chat/completions）</option>
+          <option value="anthropic">Anthropic Messages（/v1/messages）</option>
+        </select>
+        <p class="field-help">仅「自定义兼容服务」可选；阿里云百炼等 Anthropic 兼容网关选 Anthropic Messages。</p>
       </div>
       <div class="llm-field">
         <label for="llm-api-key">API Key</label>
         <input id="llm-api-key" type="password" placeholder="输入该厂商的 API Key" maxlength="4096" autocomplete="new-password">
-        <p id="llm-key-help" class="field-help">保存前会用该 Key 请求模型服务验证连通性；保存后无法从页面读回，留空则保留钥匙串中已有 Key。</p>
+        <p id="llm-key-help" class="field-help">保存前会用该 Key 请求模型服务验证连通性；保存后无法从页面读回，留空则保留系统密钥环中已有 Key。</p>
       </div>
       <p id="llm-env-warning" class="llm-env-warning" hidden>检测到环境变量配置，环境变量优先于本页面保存的选择。</p>
       <div id="llm-error" class="dialog-error" role="alert"></div>
@@ -164,9 +216,80 @@
     </form>
   </dialog>
 
-  <script src="/vendor/ace/ace.js"></script>
-  <script src="/vendor/ace/keybinding-vim.js"></script>
-  <script src="/vendor/ace/theme/theme-tomorrow_night.js"></script>
+  <dialog id="docs-dialog" class="open-dialog docs-dialog">
+    <div class="dialog-heading">
+      <div>
+        <h2>文档知识库</h2>
+        <p>解释代码时优先检索这些目录；命中后不再联网。当前仓库的 Documentation/docs/doc 会自动纳入。</p>
+      </div>
+      <button id="docs-close" class="icon-button" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="docs-body">
+      <div class="docs-add-row">
+        <input id="docs-path-input" type="text" placeholder="/path/to/specs" autocomplete="off" spellcheck="false">
+        <button id="docs-add" class="button primary" type="button">添加目录</button>
+      </div>
+      <div id="docs-dir-list" class="docs-dir-list"></div>
+      <label class="docs-toggle">
+        <input id="docs-web-enabled" type="checkbox">
+        允许联网检索（Google 优先，失败自动回退 Bing；问题会发送到搜索引擎）
+      </label>
+      <p id="docs-stats" class="field-help"></p>
+      <div id="docs-error" class="dialog-error" role="alert"></div>
+      <div class="dialog-actions">
+        <button id="docs-reindex" class="button" type="button">重建索引</button>
+        <span id="docs-progress"></span>
+        <button id="docs-save" class="button primary" type="button">保存</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="vim-help-dialog" class="open-dialog vim-help-dialog">
+    <div class="dialog-heading">
+      <div>
+        <h2>Vim 快捷键</h2>
+        <p>CodeMirror 6 Vim 模式（宏、寄存器、marks、jumplist、ex 命令）。在编辑器内输入 <kbd>:help</kbd> 可随时打开。</p>
+      </div>
+      <button id="vim-help-close" class="icon-button" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="vim-help-body">
+      <section>
+        <h3>光标移动</h3>
+        <p><kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd> 字符/行 · <kbd>w</kbd><kbd>b</kbd><kbd>e</kbd> 单词 · <kbd>0</kbd><kbd>^</kbd><kbd>$</kbd> 行首尾 · <kbd>gg</kbd><kbd>G</kbd> 文件首尾 · <kbd>{</kbd><kbd>}</kbd> 段落 · <kbd>%</kbd> 括号匹配 · <kbd>f</kbd><kbd>t</kbd><kbd>;</kbd><kbd>,</kbd> 行内跳转</p>
+      </section>
+      <section>
+        <h3>编辑与操作符</h3>
+        <p><kbd>i</kbd><kbd>a</kbd><kbd>o</kbd><kbd>O</kbd><kbd>I</kbd><kbd>A</kbd> 插入 · <kbd>d</kbd><kbd>c</kbd><kbd>y</kbd> 删除/修改/复制 · <kbd>p</kbd><kbd>P</kbd> 粘贴 · <kbd>u</kbd><kbd>Ctrl-r</kbd> 撤销/重做 · <kbd>.</kbd> 重复 · <kbd>&gt;&gt;</kbd><kbd>&lt;&lt;</kbd> 缩进 · <kbd>gU</kbd><kbd>gu</kbd> 大小写</p>
+      </section>
+      <section>
+        <h3>文本对象与可视模式</h3>
+        <p><kbd>iw</kbd><kbd>aw</kbd> 单词 · <kbd>i(</kbd><kbd>a(</kbd><kbd>i"</kbd><kbd>a"</kbd> 括号/引号 · <kbd>v</kbd><kbd>V</kbd><kbd>Ctrl-v</kbd> 字符/行/块选择 · <kbd>gv</kbd> 重选</p>
+      </section>
+      <section>
+        <h3>搜索与命令</h3>
+        <p><kbd>/</kbd><kbd>?</kbd> 搜索 · <kbd>n</kbd><kbd>N</kbd> 下一个/上一个 · <kbd>*</kbd><kbd>#</kbd> 当前词 · <kbd>:</kbd> ex 命令（<kbd>:s</kbd> <kbd>:g</kbd> <kbd>:v</kbd> <kbd>:norm</kbd> <kbd>:sort</kbd> 等）</p>
+      </section>
+      <section>
+        <h3>寄存器、宏与标记</h3>
+        <p><kbd>"a</kbd> 命名寄存器 · <kbd>q</kbd> 录制宏、<kbd>@a</kbd> 回放 · <kbd>m</kbd><kbd>'</kbd><kbd>`</kbd> 标记跳转 · <kbd>Ctrl-o</kbd><kbd>Ctrl-i</kbd> 跳转列表前后</p>
+      </section>
+      <section>
+        <h3>本应用扩展</h3>
+        <p><kbd>gd</kbd> LSP 跳定义（也支持 <kbd>Ctrl-]</kbd>）· <kbd>gr</kbd> 查找引用 · <kbd>\c</kbd> 就当前行向 LLM 提问 · <kbd>:ask</kbd> <kbd>:gd</kbd> <kbd>:gr</kbd> <kbd>:help</kbd></p>
+      </section>
+      <section class="vim-help-note">
+        <h3>浏览器限制</h3>
+        <p>浏览器保留快捷键无法被网页接管：<kbd>Ctrl-W</kbd>（关闭标签）、<kbd>Ctrl-T</kbd>（新标签）、<kbd>Ctrl-N</kbd>、<kbd>Ctrl-R</kbd>（刷新）、<kbd>Ctrl-P</kbd>（打印）、<kbd>F5</kbd>、<kbd>Alt-←/→</kbd>。另 <kbd>:!</kbd> shell 与 <kbd>:w</kbd> 写盘不可用，编辑改动只保存在内存。</p>
+      </section>
+    </div>
+  </dialog>
+
+  <div id="tree-menu" class="tree-menu" hidden>
+    <button type="button" data-action="copy-relative">复制相对路径</button>
+    <button type="button" data-action="copy-absolute">复制绝对路径</button>
+    <button type="button" data-action="refresh-tree">刷新文件树</button>
+  </div>
+
   <script src="/app.js" type="module"></script>
 </body>
 </html>

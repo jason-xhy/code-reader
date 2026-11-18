@@ -1,12 +1,15 @@
+// one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 仓库会话管理与 code-reader API 强绑定
+// grill: 成品检索=skill 库无 code-reader 仓库会话成品; 输入固定=本地路径/远程 URL/仓库 id; 步骤机械=定位根/克隆/组装 payload; 判读固定=Git 输出与文件列表; 失效场景=构造不出（仅本应用）
 import { createHash } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { AppError } from './errors.js';
-import { cloneRepository, listSourceFiles, repositoryMeta, repositoryRoot, runGit } from './git.js';
+import { cloneRepository, listSourceFiles, repositoryMeta, repositoryRoot, repositoryStatus, runGit } from './git.js';
+import { getResume, touchRepository } from './history.js';
+import { dataPath } from './paths.js';
 
 const repositories = new Map();
-const cloneRoot = fileURLToPath(new URL('../.data/repositories/', import.meta.url));
+const cloneRoot = dataPath('repositories');
 
 function digest(value) {
   return createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -32,22 +35,26 @@ function remoteDirectoryName(url) {
 }
 
 async function payload(repository) {
-  const [meta, files] = await Promise.all([
+  const [meta, files, status] = await Promise.all([
     repositoryMeta(repository.root),
     listSourceFiles(repository.root),
+    repositoryStatus(repository.root),
   ]);
-  return { repository: { id: repository.id, source: repository.source, ...meta }, files };
+  return { repository: { id: repository.id, source: repository.source, ...meta }, files, status };
 }
 
-export async function openLocal(localPath) {
+export async function openLocal(localPath, { resume = false } = {}) {
   const root = await repositoryRoot(localPath);
   const id = `local-${digest(root)}`;
   const repository = { id, root, source: 'local' };
   repositories.set(id, repository);
-  return payload(repository);
+  await touchRepository(repository, { opened: true });
+  const data = await payload(repository);
+  if (!resume) return data;
+  return { ...data, resume: await getResume(repository) };
 }
 
-export async function openRemote(remoteUrl) {
+export async function openRemote(remoteUrl, { resume = false } = {}) {
   const url = validateRemote(remoteUrl);
   const id = `remote-${digest(url)}`;
   const destination = path.join(cloneRoot, remoteDirectoryName(url));
@@ -73,7 +80,10 @@ export async function openRemote(remoteUrl) {
 
   const repository = { id, root, source: 'remote', remoteUrl: url };
   repositories.set(id, repository);
-  return payload(repository);
+  await touchRepository(repository, { opened: true });
+  const data = await payload(repository);
+  if (!resume) return data;
+  return { ...data, resume: await getResume(repository) };
 }
 
 export function getRepository(id) {

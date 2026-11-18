@@ -1,3 +1,5 @@
+// one-shot: code-reader 前端页面源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 与 code-reader 的 DOM 结构强绑定
+// grill: 成品检索=skill 库无该页面设置模块成品; 输入固定=固定表单元素与 /api/config 响应; 步骤机械=渲染厂商/协议字段并提交; 判读固定=按响应 llm 对象回填; 失效场景=构造不出（仅本应用）
 export function createLlmSettings({ api, onStatus }) {
   const elements = {
     dialog: document.querySelector('#llm-dialog'),
@@ -12,6 +14,8 @@ export function createLlmSettings({ api, onStatus }) {
     envWarning: document.querySelector('#llm-env-warning'),
     error: document.querySelector('#llm-error'),
     progress: document.querySelector('#llm-save-progress'),
+    protocol: document.querySelector('#llm-protocol'),
+    protocolField: document.querySelector('#llm-protocol-field'),
     save: document.querySelector('#llm-save'),
   };
   let config = null;
@@ -50,8 +54,12 @@ export function createLlmSettings({ api, onStatus }) {
 
   function renderProvider(preferredModel) {
     const currentProvider = provider();
-    elements.baseUrl.value = currentProvider?.id === 'custom' ? config.baseUrl : currentProvider?.baseUrl || '';
-    elements.baseUrl.readOnly = currentProvider?.id !== 'custom';
+    const isCustom = currentProvider?.id === 'custom';
+    elements.baseUrl.value = isCustom ? config.baseUrl : currentProvider?.baseUrl || '';
+    elements.baseUrl.readOnly = !isCustom;
+    elements.protocolField.hidden = !isCustom;
+    elements.protocol.disabled = !isCustom;
+    elements.protocol.value = isCustom ? (config.protocol === 'anthropic' ? 'anthropic' : 'openai') : 'openai';
     renderModels(preferredModel);
     elements.apiKey.value = '';
     elements.keyHelp.textContent = '保存前会用该 Key 请求模型服务验证连通性；留空则保留钥匙串中已有 Key。';
@@ -118,6 +126,7 @@ export function createLlmSettings({ api, onStatus }) {
         body: JSON.stringify({
           provider: elements.provider.value,
           model,
+          protocol: elements.protocol.value,
           baseUrl: elements.baseUrl.value.trim(),
           apiKey: elements.apiKey.value,
         }),

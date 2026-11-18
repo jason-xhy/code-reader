@@ -1,8 +1,10 @@
-import { access, mkdir, rename, writeFile } from 'node:fs/promises';
+// one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 编译数据库生成与 LSP 层强绑定
+// grill: 成品检索=skill 库无 code-reader 编译数据库成品; 输入固定=仓库根+文件列表+仓库 id; 步骤机械=探测/生成/清理固定路径; 判读固定=文件存在性; 失效场景=构造不出（仅本应用）
+import { access, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dataPath } from './paths.js';
 
-const lspDataRoot = fileURLToPath(new URL('../.data/lsp/', import.meta.url));
+const lspDataRoot = dataPath('lsp');
 const SOURCE_EXTENSIONS = new Set(['.c', '.cc', '.cpp', '.cxx']);
 const CPP_EXTENSIONS = new Set(['.cc', '.cpp', '.cxx']);
 
@@ -13,6 +15,11 @@ async function exists(target) {
   } catch {
     return false;
   }
+}
+
+export async function clearCompilationDatabase(id) {
+  if (typeof id !== 'string' || !/^[a-z0-9-]+$/i.test(id)) return;
+  await rm(path.join(lspDataRoot, id), { recursive: true, force: true });
 }
 
 export async function prepareCompilationDatabase(root, files, id) {

@@ -1,8 +1,10 @@
+// one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 与 code-reader 的配置字段与协议实现强绑定
+// grill: 成品检索=skill 库无该应用 LLM 配置成品; 输入固定=固定表单字段与固定 API 路径; 步骤机械=按 openai/anthropic 协议分支; 判读固定=按 HTTP 状态与响应结构判定; 失效场景=构造不出（仅本应用）
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { AppError } from './errors.js';
 import { readApiKey, storeApiKey } from './keychain.js';
+import { dataPath } from './paths.js';
 
 export const LLM_PROVIDERS = [
   {
@@ -58,17 +60,33 @@ export const LLM_PROVIDERS = [
     ],
   },
   {
-    id: 'custom', name: '自定义 OpenAI 兼容服务', baseUrl: '', models: [],
+    id: 'custom', name: '自定义兼容服务', baseUrl: '', models: [],
   },
 ];
 
-const configPath = fileURLToPath(new URL('../.data/llm-config.json', import.meta.url));
-let selection = { provider: 'kimi', model: 'kimi-k3.1-pro', baseUrl: LLM_PROVIDERS[0].baseUrl };
+const configPath = dataPath('llm-config.json');
+
+function normalizeProtocol(value) {
+  return value === 'anthropic' ? 'anthropic' : 'openai';
+}
+
+export function anthropicMessagesUrl(baseUrl) {
+  const trimmed = baseUrl.replace(/\/+$/, '');
+  if (trimmed.endsWith('/v1/messages')) return trimmed;
+  return trimmed.endsWith('/v1') ? `${trimmed}/messages` : `${trimmed}/v1/messages`;
+}
+
+let selection = { provider: 'kimi', model: 'kimi-k3.1-pro', baseUrl: LLM_PROVIDERS[0].baseUrl, protocol: 'openai' };
 
 try {
   const saved = JSON.parse(await readFile(configPath, 'utf8'));
   if (getProvider(saved.provider) && typeof saved.model === 'string' && typeof saved.baseUrl === 'string') {
-    selection = { provider: saved.provider, model: saved.model, baseUrl: saved.baseUrl };
+    selection = {
+      provider: saved.provider,
+      model: saved.model,
+      baseUrl: saved.baseUrl,
+      protocol: saved.provider === 'custom' ? normalizeProtocol(saved.protocol) : 'openai',
+    };
   }
 } catch {
 }
@@ -84,23 +102,43 @@ function validateModel(model) {
   return model.trim();
 }
 
-async function validateApiKey(baseUrl, apiKey) {
+async function validateApiKey(baseUrl, apiKey, protocol, model) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12_000);
+  const timer = setTimeout(() => controller.abort(), 20_000);
   try {
-    const response = await fetch(`${baseUrl}/models`, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      signal: controller.signal,
-    });
+    const response = protocol === 'anthropic'
+      ? await fetch(anthropicMessagesUrl(baseUrl), {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: 16,
+            messages: [{ role: 'user', content: 'ping' }],
+          }),
+          signal: controller.signal,
+        })
+      : await fetch(`${baseUrl}/models`, {
+          headers: { authorization: `Bearer ${apiKey}` },
+          signal: controller.signal,
+        });
     if (response.status === 401 || response.status === 403) {
       throw new AppError(`API Key 验证失败（HTTP ${response.status}），请检查 Key 是否正确`, 400, 'API_KEY_INVALID');
     }
     if (!response.ok) {
-      throw new AppError(`模型服务返回 HTTP ${response.status}，无法确认 Key 有效，配置未保存`, 502, 'API_VALIDATE_FAILED');
+      const detail = await response.text().catch(() => '');
+      throw new AppError(
+        `模型服务返回 HTTP ${response.status}${detail ? `：${detail.slice(0, 200)}` : ''}，无法确认 Key 有效，配置未保存`,
+        502,
+        'API_VALIDATE_FAILED',
+      );
     }
   } catch (error) {
     if (error instanceof AppError) throw error;
-    if (error.name === 'AbortError') throw new AppError('验证 API Key 超时（12 秒），请检查网络后重试', 504, 'API_VALIDATE_TIMEOUT');
+    if (error.name === 'AbortError') throw new AppError('验证 API Key 超时（20 秒），请检查网络后重试', 504, 'API_VALIDATE_TIMEOUT');
     throw new AppError(`无法连接模型服务：${error.message}`, 502, 'API_VALIDATE_FAILED');
   } finally {
     clearTimeout(timer);
@@ -126,6 +164,7 @@ export async function resolveLlmConfig() {
   const environmentOverride = Boolean(process.env.LLM_API_KEY || process.env.LLM_MODEL || process.env.LLM_BASE_URL);
   const model = process.env.LLM_MODEL || selection.model;
   const baseUrl = process.env.LLM_BASE_URL || (process.env.LLM_MODEL ? 'https://api.openai.com/v1' : selection.baseUrl);
+  const protocol = normalizeProtocol(process.env.LLM_PROTOCOL || (provider.id === 'custom' ? selection.protocol : 'openai'));
   const storedKey = process.env.LLM_API_KEY ? null : await readApiKey(selection.provider);
   const apiKey = process.env.LLM_API_KEY || storedKey;
   return {
@@ -133,6 +172,7 @@ export async function resolveLlmConfig() {
     providerName: provider.name,
     model,
     baseUrl,
+    protocol,
     apiKey,
     configured: Boolean(apiKey && model && baseUrl),
     keyStored: Boolean(storedKey),
@@ -149,6 +189,7 @@ export async function llmStatus() {
     providerName: config.providerName,
     model: config.model,
     baseUrl: config.baseUrl,
+    protocol: config.protocol,
     keyStored: config.keyStored,
     keySource: config.keySource,
     environmentOverride: config.environmentOverride,
@@ -161,12 +202,13 @@ export async function saveLlmConfig(body) {
   if (!provider) throw new AppError('未知的模型厂商', 400, 'INVALID_PROVIDER');
   const model = validateModel(body.model);
   const baseUrl = provider.id === 'custom' ? validateBaseUrl(body.baseUrl) : provider.baseUrl;
+  const protocol = provider.id === 'custom' ? normalizeProtocol(body.protocol) : 'openai';
   if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
     const apiKey = body.apiKey.trim();
-    await validateApiKey(baseUrl, apiKey);
+    await validateApiKey(baseUrl, apiKey, protocol, model);
     await storeApiKey(provider.id, apiKey);
   }
-  selection = { provider: provider.id, model, baseUrl };
+  selection = { provider: provider.id, model, baseUrl, protocol };
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeFile(configPath, `${JSON.stringify(selection, null, 2)}\n`, { mode: 0o600 });
   return llmStatus();
