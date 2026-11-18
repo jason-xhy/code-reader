@@ -1,14 +1,22 @@
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: LSP 会话管理与 code-reader 仓库模型强绑定
 // grill: 成品检索=skill 库无 code-reader LSP 成品; 输入固定=仓库对象/JSON-RPC 固定方法; 步骤机械=启动/同步文档/请求/重置; 判读固定=LSP 标准 result 结构; 失效场景=构造不出（仅本应用）
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { accessSync, constants, readdirSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { AppError } from './errors.js';
 import { listSourceFiles, readSource } from './git.js';
 import { clearCompilationDatabase, prepareCompilationDatabase } from './compile-db.js';
 import { searchSymbolDefinitions } from './symbol-search.js';
 
+const execFileAsync = promisify(execFile);
 const REQUEST_TIMEOUT = 60_000;
 const MAX_OPEN_DOCUMENTS = 200;
+// clangd 17+ 支持内核树的 `asm __inline` 等新语法；更旧的 clangd 会让全部 LSP 查询落空。
+const MODERN_CLANGD_MAJOR = 17;
+const ENGINE_CACHE_TTL = 60_000;
 
 const LANGUAGE_BY_EXTENSION = new Map(Object.entries({
   '.c': 'c',
@@ -33,24 +41,92 @@ function fileUriToPath(uri) {
   }
 }
 
-function enginePreference() {
-  const configured = (process.env.CODE_READER_LSP || 'auto').trim().toLowerCase();
-  if (configured === 'ccls' || configured === 'clangd') return [configured];
-  return ['clangd', 'ccls'];
-}
-
-function detectEngines() {
-  const available = [];
-  for (const name of enginePreference()) {
-    const probe = spawnSync(name, ['--version'], { timeout: 10_000 });
-    if (probe.error || probe.status !== 0) continue;
-    available.push(name);
+function executable(candidate) {
+  try {
+    accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
   }
-  return available;
 }
 
-function engineArgs(name, database) {
-  if (name === 'clangd') {
+// 优先使用环境变量指定的 clangd；否则按「PATH 中的 clangdN / clangd-N」+ neovim mason 安装目录
+// 收集候选，实测版本后按主版本号从高到低选择（系统自带 clangd 10 无法解析现代内核树）。
+function candidateCommands() {
+  const explicit = (process.env.CODE_READER_CLANGD || '').trim();
+  if (explicit) return [explicit];
+  const preference = (process.env.CODE_READER_LSP || 'auto').trim().toLowerCase();
+  const names = ['clangd', 'ccls'];
+  for (let major = 21; major >= 14; major -= 1) {
+    names.push(`clangd${major}`, `clangd-${major}`);
+  }
+  const masonBase = path.join(homedir(), '.local', 'share', 'nvim', 'mason', 'packages', 'clangd');
+  let entries = [];
+  try {
+    entries = readdirSync(masonBase, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+  const mason = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(masonBase, entry.name, 'bin', 'clangd'))
+    .filter(executable);
+  let candidates = [...names, ...mason];
+  if (preference === 'clangd') candidates = candidates.filter((candidate) => !/ccls/i.test(path.basename(candidate)));
+  if (preference === 'ccls') candidates = candidates.filter((candidate) => /ccls/i.test(path.basename(candidate)));
+  return candidates;
+}
+
+async function probeEngine(command) {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, ['--version'], { timeout: 5_000 });
+    const base = path.basename(command).toLowerCase();
+    if (base.startsWith('ccls')) return { command, kind: 'ccls', name: 'ccls', version: 'unknown', major: 0 };
+    const match = /clangd version (\d+)(?:\.(\d+))?(?:\.(\d+))?/i.exec(`${stdout}\n${stderr}`);
+    if (!match) return null;
+    const major = Number(match[1]);
+    return {
+      command,
+      kind: 'clangd',
+      name: 'clangd',
+      version: `${match[1]}.${match[2] ?? '0'}.${match[3] ?? '0'}`,
+      major,
+    };
+  } catch {
+    return null;
+  }
+}
+
+let engineCache = { at: 0, engines: [] };
+
+async function detectEngines() {
+  if (Date.now() - engineCache.at < ENGINE_CACHE_TTL) return engineCache.engines;
+  const seen = new Set();
+  const unique = [];
+  for (const command of candidateCommands()) {
+    let key = command;
+    try {
+      key = realpathSync(command);
+    } catch {
+      // 命令名形式（依赖 PATH）无法 realpath，按字面去重
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(command);
+  }
+  const probed = await Promise.all(unique.map(probeEngine));
+  const engines = probed
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'clangd' ? -1 : 1;
+      return b.major - a.major || b.version.localeCompare(a.version, undefined, { numeric: true });
+    });
+  engineCache = { at: Date.now(), engines };
+  return engines;
+}
+
+function engineArgs(engine, database) {
+  if (engine.kind === 'clangd') {
     const args = ['--background-index', '--header-insertion=never'];
     if (database.generated) args.push(`--compile-commands-dir=${database.directory}`);
     return { args, initializationOptions: undefined };
@@ -179,22 +255,37 @@ class LspSession {
     this.initPromise = null;
     this.openDocuments = new Map();
     this.openDocumentsVersions = new Map();
+    this.syncedHashes = new Map();
   }
 
-  status() {
-    const detected = detectEngines();
-    const available = this.engine ? true : detected.length > 0;
+  async status() {
+    const engines = await detectEngines();
+    const available = Boolean(this.engine) || engines.length > 0;
     if (available && !this.engine && !this.failed && !this.initPromise) {
       this.initPromise = this.#initialize();
       this.initPromise.catch(() => {});
     }
+    const info = this.engine || engines[0] || null;
+    let detail;
+    if (this.engine) {
+      const databaseNote = this.database?.generated ? '（使用生成的编译数据库）' : '（使用仓库自带编译数据库）';
+      detail = `语言服务器 ${this.engine.name} ${this.engine.version} 已就绪${databaseNote}`;
+      if (this.engine.kind === 'clangd' && this.engine.major < MODERN_CLANGD_MAJOR) {
+        detail += `。该版本较旧，asm inline 等语法可能解析失败，跳转将回退文本检索；建议安装 clangd ${MODERN_CLANGD_MAJOR} 以上`;
+      }
+    } else if (this.failed) {
+      detail = this.failed.message;
+    } else if (!available) {
+      detail = '未检测到 clangd/ccls';
+    } else {
+      detail = `语言服务器尚未启动（将使用 ${info.name} ${info.version}），打开 C/C++ 文件后自动初始化`;
+    }
     return {
       available,
-      engine: this.engine || detected[0] || null,
+      engine: info ? info.name : null,
+      engineVersion: info ? info.version : null,
       initialized: Boolean(this.engine),
-      detail: this.engine
-        ? `语言服务器 ${this.engine} 已就绪${this.database?.generated ? '（使用生成的编译数据库）' : ''}`
-        : (this.failed?.message || (available ? '语言服务器尚未启动，打开 C/C++ 文件后自动初始化' : '未检测到 clangd/ccls')),
+      detail,
     };
   }
 
@@ -225,17 +316,17 @@ class LspSession {
   }
 
   async #initialize() {
-    const candidates = detectEngines();
-    if (!candidates.length) {
+    const engines = await detectEngines();
+    if (!engines.length) {
       this.failed = new AppError('未检测到语言服务器（clangd/ccls）', 503, 'LSP_UNAVAILABLE');
       throw this.failed;
     }
     const files = await listSourceFiles(this.repository.root);
-    for (const name of candidates) {
+    for (const engine of engines) {
       try {
         const database = await prepareCompilationDatabase(this.repository.root, files, this.repository.id);
-        const { args, initializationOptions } = engineArgs(name, database);
-        this.client = new LspClient(name, args).start();
+        const { args, initializationOptions } = engineArgs(engine, database);
+        this.client = new LspClient(engine.command, args).start();
         const rootUri = pathToFileUri(this.repository.root);
         const params = {
           processId: process.pid,
@@ -252,7 +343,7 @@ class LspSession {
         if (initializationOptions) params.initializationOptions = initializationOptions;
         await this.client.request('initialize', params);
         this.client.notify('initialized', {});
-        this.engine = name;
+        this.engine = engine;
         this.database = database;
         return;
       } catch (error) {
@@ -271,12 +362,17 @@ class LspSession {
     const uri = pathToFileUri(path.join(this.repository.root, filePath));
     if (existing) {
       if (content !== undefined && content !== null) {
-        const version = (this.openDocumentsVersions.get(filePath) || 1) + 1;
-        this.openDocumentsVersions.set(filePath, version);
-        this.client.notify('textDocument/didChange', {
-          textDocument: { uri, version },
-          contentChanges: [{ text: content }],
-        });
+        const hash = createHash('sha256').update(content).digest('hex');
+        // 内容未变化时不发 didChange：clangd 会因此重新解析整个文件（内核文件约 1-2 秒）。
+        if (this.syncedHashes.get(filePath) !== hash) {
+          const version = (this.openDocumentsVersions.get(filePath) || 1) + 1;
+          this.openDocumentsVersions.set(filePath, version);
+          this.syncedHashes.set(filePath, hash);
+          this.client.notify('textDocument/didChange', {
+            textDocument: { uri, version },
+            contentChanges: [{ text: content }],
+          });
+        }
       }
       return;
     }
@@ -285,6 +381,7 @@ class LspSession {
       if (oldest) {
         this.client.notify('textDocument/didClose', { textDocument: { uri: this.openDocuments.get(oldest) } });
         this.openDocuments.delete(oldest);
+        this.syncedHashes.delete(oldest);
       }
     }
     let text = content;
@@ -293,9 +390,16 @@ class LspSession {
     }
     this.openDocuments.set(filePath, uri);
     this.openDocumentsVersions.set(filePath, 1);
+    this.syncedHashes.set(filePath, createHash('sha256').update(text).digest('hex'));
     this.client.notify('textDocument/didOpen', {
       textDocument: { uri, languageId, version: 1, text },
     });
+  }
+
+  // 打开文件时后台预热：让 clangd 提前解析，首次 gd/gr 不再等待整文件解析。
+  prewarm(filePath, content) {
+    if (typeof filePath !== 'string' || !LANGUAGE_BY_EXTENSION.has(path.extname(filePath))) return;
+    this.#syncDocument(filePath, content).catch(() => {});
   }
 stop() {
     this.client?.stop();
@@ -305,6 +409,7 @@ stop() {
     this.initPromise = null;
     this.openDocuments.clear();
     this.openDocumentsVersions.clear();
+    this.syncedHashes.clear();
   }
 }
 
@@ -347,8 +452,14 @@ export async function resetLspSession(repositoryId) {
   await clearCompilationDatabase(repositoryId);
 }
 
-export function lspStatus(repository) {
+export async function lspStatus(repository) {
   return sessionFor(repository).status();
+}
+
+export function lspPrewarm(repository, body) {
+  const session = sessions.get(repository.id);
+  if (!session || !session.engine) return;
+  session.prewarm(body.path, body.content);
 }
 
 export async function lspGotoDefinition(repository, body) {

@@ -19,11 +19,13 @@ import {
 } from './src/git.js';
 import { explainSource, llmStatus, saveLlmConfig } from './src/llm.js';
 import { getRepository, openLocal, openRemote, repositoryPayload } from './src/repositories.js';
-import { lspGotoDefinition, lspReferences, lspStatus, resetLspSession } from './src/lsp.js';
+import { lspGotoDefinition, lspPrewarm, lspReferences, lspStatus, resetLspSession } from './src/lsp.js';
 import { clearHistory, listHistory, removeHistory, touchRepository } from './src/history.js';
 import { listDirectories } from './src/fs-browser.js';
 import { docsStats, getDocsConfig, invalidateDocsIndex, saveDocsConfig } from './src/docs.js';
 import { deleteFaq, detectSegment, findFaq, recordFaq } from './src/faq.js';
+import { attachNvim } from './src/nvim.js';
+import { editorStatus, initEditorEnv, saveEditorConfig } from './src/editor-env.js';
 
 const publicRoot = fileURLToPath(new URL('./public/', import.meta.url));
 const port = Number.parseInt(process.env.PORT || '8765', 10);
@@ -84,6 +86,15 @@ function characterParam(value) {
 }
 
 async function handleApi(request, response, url) {
+  if (url.pathname === '/api/editor' && request.method === 'GET') {
+    sendJson(response, 200, await editorStatus());
+    return;
+  }
+  if (url.pathname === '/api/editor' && request.method === 'POST') {
+    const body = await readJson(request);
+    sendJson(response, 200, await saveEditorConfig(body));
+    return;
+  }
   if (url.pathname === '/api/config' && request.method === 'GET') {
     sendJson(response, 200, { llm: await llmStatus() });
     return;
@@ -211,7 +222,7 @@ async function handleApi(request, response, url) {
     const repository = getRepository(decodeURIComponent(lspMatch[1]));
     const action = lspMatch[2];
     if (action === 'status' && request.method === 'GET') {
-      sendJson(response, 200, lspStatus(repository));
+      sendJson(response, 200, await lspStatus(repository));
       return;
     }
     if (request.method !== 'POST') throw new AppError('该 API 不支持此请求方法', 405, 'METHOD_NOT_ALLOWED');
@@ -244,7 +255,10 @@ async function handleApi(request, response, url) {
     return;
   }
   if (action === 'file' && request.method === 'GET') {
-    sendJson(response, 200, await readSource(repository.root, url.searchParams.get('path') || ''));
+    const filePath = url.searchParams.get('path') || '';
+    const data = await readSource(repository.root, filePath);
+    lspPrewarm(repository, { path: filePath, content: data.content });
+    sendJson(response, 200, data);
     return;
   }
   if (action === 'line-history' && request.method === 'GET') {
@@ -341,6 +355,10 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
+await initEditorEnv();
+
 server.listen(port, '127.0.0.1', () => {
   console.log(`Code Reader: http://127.0.0.1:${port}`);
 });
+
+attachNvim(server, { port });

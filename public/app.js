@@ -70,6 +70,14 @@ const elements = {
   sourceStatus: $('#source-status'),
   codeEmpty: $('#code-empty'),
   editorHost: $('#editor-host'),
+  codeArea: $('#code-area'),
+  tabEditor: $('#tab-editor'),
+  tabNvim: $('#tab-nvim'),
+  nvimHost: $('#nvim-host'),
+  nvimStatus: $('#nvim-status'),
+  nvimOpenCurrent: $('#nvim-open-current'),
+  nvimRestart: $('#nvim-restart'),
+  nvimClose: $('#nvim-close'),
   questionEditor: $('#question-editor'),
   questionAnchor: $('#question-anchor'),
   questionInput: $('#question-input'),
@@ -80,6 +88,21 @@ const elements = {
   historyContent: $('#history-content'),
   explanationAnchor: $('#explanation-anchor'),
   explanationContent: $('#explanation-content'),
+  commitOverlay: $('#commit-overlay'),
+  commitOverlayTitle: $('#commit-overlay-title'),
+  commitOverlayBody: $('#commit-overlay-body'),
+  commitOverlayClose: $('#commit-overlay-close'),
+  editorTabsHint: $('#editor-tabs-hint'),
+  editorEnvSettings: $('#editor-env-settings'),
+  editorEnvDialog: $('#editor-env-dialog'),
+  editorEnvClose: $('#editor-env-close'),
+  editorEnvDetected: $('#editor-env-detected'),
+  editorEnvCommand: $('#editor-env-command'),
+  editorEnvAppName: $('#editor-env-appname'),
+  editorEnvError: $('#editor-env-error'),
+  editorEnvProgress: $('#editor-env-progress'),
+  editorEnvRefresh: $('#editor-env-refresh'),
+  editorEnvSave: $('#editor-env-save'),
 };
 
 const state = {
@@ -117,6 +140,8 @@ const state = {
   dirBrowserPath: '',
   layout: { sidebar: 252, insights: 372, collapsed: false },
   theme: 'one-dark',
+  editorMode: 'editor',
+  editorEnv: null,
 };
 
 const savedTheme = localStorage.getItem(THEME_KEY);
@@ -868,8 +893,9 @@ function renderLspState() {
     return;
   }
   if (lsp.initialized) {
-    elements.lspBadge.textContent = `LSP ${lsp.engine}`;
-    elements.lspState.textContent = `${lsp.engine} 就绪 · gd 跳定义 · gr 跳引用`;
+    const version = lsp.engineVersion ? ` ${lsp.engineVersion}` : '';
+    elements.lspBadge.textContent = `LSP ${lsp.engine}${lsp.engineVersion ? ` ${lsp.engineVersion.split('.')[0]}` : ''}`;
+    elements.lspState.textContent = `${lsp.engine}${version} 就绪 · gd 跳定义 · gr 跳引用`;
   } else if (lsp.available) {
     elements.lspBadge.textContent = 'LSP 启动中';
     elements.lspState.textContent = '语言服务器初始化中…';
@@ -907,8 +933,118 @@ function scheduleLspPolling() {
   }, 500);
 }
 
+function renderEditorEnvDialog() {
+  const env = state.editorEnv;
+  const detected = elements.editorEnvDetected;
+  detected.replaceChildren();
+  const describe = (label, info) => {
+    const row = document.createElement('div');
+    row.className = 'editor-env-row';
+    if (!info) {
+      row.textContent = `${label}：检测中…`;
+      return row;
+    }
+    if (!info.available) {
+      row.textContent = `${label}：未检测到`;
+      return row;
+    }
+    const managers = info.managers?.length ? `（${info.managers.join('、')}）` : '';
+    row.textContent = `${label}：${info.version || '已安装'} · 配置${info.hasConfig ? '有' : '无'} · 插件 ${info.pluginCount} 个${managers}`;
+    return row;
+  };
+  detected.append(describe('neovim', env?.nvim), describe('vim', env?.vim));
+  const active = document.createElement('div');
+  active.className = 'editor-env-row';
+  active.textContent = env?.available
+    ? `当前：${env.active.program === 'custom' ? `自定义命令 ${env.active.command}` : env.active.program}${env.active.appName ? `（配置名 ${env.active.appName}）` : ''}`
+    : '当前：内置编辑器（未关联本地 vim/neovim）';
+  detected.append(active);
+  const program = env?.saved?.program || 'auto';
+  for (const radio of document.querySelectorAll('input[name="editor-env-program"]')) radio.checked = radio.value === program;
+  elements.editorEnvCommand.value = env?.saved?.command || '';
+  elements.editorEnvAppName.value = env?.saved?.appName || '';
+  elements.editorEnvCommand.disabled = program !== 'custom';
+  elements.editorEnvError.textContent = '';
+}
+
+function applyEditorAvailability() {
+  const available = Boolean(state.editorEnv?.available);
+  elements.tabNvim.disabled = !available;
+  elements.tabNvim.title = available
+    ? '在浏览器内运行本地 vim/neovim（真实插件与键位）'
+    : '未检测到本地 vim/neovim：使用内置编辑器（点左下角「编辑器环境」关联）';
+  elements.editorTabsHint.textContent = available
+    ? 'vim/neovim 为真实本地进程：:w 会写盘，插件与 LSP 使用你的本地配置'
+    : '未检测到本地 vim/neovim，使用内置编辑器 · 可在左下角「编辑器环境」关联';
+  if (!available && state.editorMode === 'nvim') closeNvim();
+}
+
+async function loadEditorEnv({ openDialog = false } = {}) {
+  try {
+    state.editorEnv = await api('/api/editor');
+  } catch (error) {
+    state.editorEnv = null;
+    if (openDialog) elements.editorEnvError.textContent = `检测失败：${error.message}`;
+  }
+  applyEditorAvailability();
+  if (openDialog) renderEditorEnvDialog();
+  return state.editorEnv;
+}
+
+function setEditorMode(mode) {
+  const nvim = mode === 'nvim';
+  if (nvim && !state.editorEnv?.available) {
+    elements.sourceStatus.textContent = '未关联本地 vim/neovim，继续使用内置编辑器';
+    return;
+  }
+  if (nvim && !state.repository) {
+    elements.sourceStatus.textContent = '先打开一个仓库再使用 nvim';
+    return;
+  }
+  state.editorMode = nvim ? 'nvim' : 'editor';
+  elements.tabEditor.classList.toggle('active', !nvim);
+  elements.tabEditor.setAttribute('aria-selected', String(!nvim));
+  elements.tabNvim.classList.toggle('active', nvim);
+  elements.tabNvim.setAttribute('aria-selected', String(nvim));
+  elements.nvimHost.hidden = !nvim;
+  elements.codeArea.classList.toggle('mode-nvim', nvim);
+  if (!nvim) {
+    editor?.focus();
+    return;
+  }
+  const file = state.currentFile;
+  const line = file ? editor.getCursor().line : 1;
+  window.CodeReaderTerminal?.open({ repositoryId: state.repository.id, file, line });
+}
+
+function closeNvim() {
+  window.CodeReaderTerminal?.close();
+  setEditorMode('editor');
+}
+
+function restartNvim() {
+  if (!state.repository) return;
+  window.CodeReaderTerminal?.close();
+  setEditorMode('nvim');
+}
+
+function openCurrentInNvim() {
+  if (!state.repository) return;
+  if (!state.currentFile) {
+    elements.sourceStatus.textContent = '先在代码树选择一个文件';
+    return;
+  }
+  if (state.editorMode !== 'nvim') {
+    setEditorMode('nvim');
+    return;
+  }
+  window.CodeReaderTerminal?.openFile(state.currentFile, editor.getCursor().line);
+}
+
 async function loadRepository(data, { preserveFile = false, stashNotice = true } = {}) {
   const previousFile = preserveFile ? state.currentFile : null;
+  closeNvim();
+  closeCommitOverlay();
   state.repository = data.repository;
   state.files = data.files;
   state.filesLower = data.files.map((filePath) => filePath.toLowerCase());
@@ -1013,6 +1149,7 @@ async function selectFile(filePath, reveal = null) {
     state.history = null;
     state.explanation = null;
     state.commitDetail = null;
+    closeCommitOverlay();
     state.faqEntries = [];
     state.faqKey = null;
     closeQuestion();
@@ -1076,29 +1213,50 @@ async function fetchFunctionHistory(line) {
   }
 }
 
-async function toggleCommit(hash) {
-  if (state.commitDetail?.hash === hash && state.commitDetail.status === 'done') {
-    state.commitDetail = null;
-    renderHistory();
+function closeCommitOverlay() {
+  state.commitDetail = null;
+  elements.commitOverlay.hidden = true;
+  elements.commitOverlayBody.replaceChildren();
+}
+
+function renderCommitOverlay() {
+  const detail = state.commitDetail;
+  if (!detail) {
+    elements.commitOverlay.hidden = true;
+    elements.commitOverlayBody.replaceChildren();
     return;
   }
+  elements.commitOverlay.hidden = false;
+  const commit = (state.history?.commits || []).find((entry) => entry.hash === detail.hash);
+  elements.commitOverlayTitle.textContent = detail.status === 'done'
+    ? `${detail.data.short || detail.hash} · ${detail.data.message.split('\n')[0]}`
+    : (commit ? `${commit.hash} · ${commit.subject}` : `提交 ${detail.hash}`);
+  elements.commitOverlayBody.replaceChildren(renderCommitDetail(detail));
+}
+
+async function showCommit(hash) {
+  if (!state.repository) return;
   if (state.commitCache.has(hash)) {
     state.commitDetail = { hash, status: 'done', data: state.commitCache.get(hash) };
+    renderCommitOverlay();
     renderHistory();
     return;
   }
   state.commitDetail = { hash, status: 'loading' };
+  renderCommitOverlay();
   renderHistory();
   try {
     const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/commit?hash=${encodeURIComponent(hash)}`);
     state.commitCache.set(hash, data);
     if (state.commitDetail?.hash === hash) {
       state.commitDetail = { hash, status: 'done', data };
+      renderCommitOverlay();
       renderHistory();
     }
   } catch (error) {
     if (state.commitDetail?.hash === hash) {
       state.commitDetail = { hash, status: 'error', message: error.message };
+      renderCommitOverlay();
       renderHistory();
     }
   }
@@ -1142,6 +1300,9 @@ function renderCommitDetail(detail) {
     return box;
   }
   const data = detail.data;
+  const identity = document.createElement('div');
+  identity.className = 'faq-meta';
+  identity.textContent = `提交 ${data.short || data.hash}（${data.hash}）`;
   const meta = document.createElement('div');
   meta.className = 'faq-meta';
   meta.textContent = `${data.author} <${data.email}> · ${new Date(data.date).toLocaleString()}`;
@@ -1159,7 +1320,7 @@ function renderCommitDetail(detail) {
   const summary = document.createElement('summary');
   summary.textContent = `Diff（${data.files.length} 个文件${data.truncated ? '，已截断' : ''}）`;
   details.append(summary, renderDiff(data.diff));
-  box.append(meta, message, files, details);
+  box.append(identity, meta, message, files, details);
   return box;
 }
 
@@ -1203,9 +1364,20 @@ function renderFaq() {
   for (const entry of entries) {
     const card = document.createElement('div');
     card.className = 'faq-card';
-    const question = document.createElement('div');
-    question.className = 'faq-question';
-    question.textContent = entry.question;
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'faq-question faq-toggle';
+    toggle.setAttribute('aria-expanded', 'false');
+    const questionText = document.createElement('span');
+    questionText.className = 'faq-question-text';
+    questionText.textContent = entry.question;
+    const toggleIcon = document.createElement('span');
+    toggleIcon.className = 'faq-toggle-icon';
+    toggleIcon.textContent = '▸';
+    toggle.append(questionText, toggleIcon);
+    const body = document.createElement('div');
+    body.className = 'faq-body';
+    body.hidden = true;
     const overview = document.createElement('p');
     overview.textContent = entry.overview;
     const details = document.createElement('details');
@@ -1248,7 +1420,14 @@ function renderFaq() {
       }
     });
     actions.append(remove);
-    card.append(question, overview, details, meta, actions);
+    toggle.addEventListener('click', () => {
+      const expanded = body.hidden;
+      body.hidden = !expanded;
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggleIcon.textContent = expanded ? '▾' : '▸';
+    });
+    body.append(overview, details, meta, actions);
+    card.append(toggle, body);
     elements.faqContent.append(card);
   }
 }
@@ -1299,9 +1478,8 @@ function renderHistory() {
     subject.className = 'commit-subject';
     subject.textContent = ` ${commit.subject}`;
     header.append(hash, subject);
-    header.addEventListener('click', () => toggleCommit(commit.hash));
+    header.addEventListener('click', () => showCommit(commit.hash));
     item.append(header);
-    if (detail) item.append(renderCommitDetail(detail));
     list.append(item);
   }
   elements.historyContent.append(list);
@@ -1781,6 +1959,53 @@ window.__ts = {
 };
 
 elements.openMenu.addEventListener('click', showOpenDialog);
+elements.tabEditor.addEventListener('click', () => setEditorMode('editor'));
+elements.tabNvim.addEventListener('click', () => setEditorMode('nvim'));
+elements.nvimClose.addEventListener('click', closeNvim);
+elements.nvimRestart.addEventListener('click', restartNvim);
+elements.nvimOpenCurrent.addEventListener('click', openCurrentInNvim);
+elements.commitOverlayClose.addEventListener('click', closeCommitOverlay);
+elements.commitOverlay.addEventListener('click', (event) => {
+  if (event.target === elements.commitOverlay) closeCommitOverlay();
+});
+elements.editorEnvSettings.addEventListener('click', async () => {
+  elements.editorEnvDialog.showModal();
+  renderEditorEnvDialog();
+  await loadEditorEnv({ openDialog: true });
+});
+elements.editorEnvClose.addEventListener('click', () => elements.editorEnvDialog.close());
+elements.editorEnvRefresh.addEventListener('click', async () => {
+  elements.editorEnvProgress.textContent = '检测中…';
+  await loadEditorEnv({ openDialog: true });
+  elements.editorEnvProgress.textContent = '';
+});
+for (const radio of document.querySelectorAll('input[name="editor-env-program"]')) {
+  radio.addEventListener('change', () => {
+    elements.editorEnvCommand.disabled = radio.value !== 'custom';
+  });
+}
+elements.editorEnvSave.addEventListener('click', async () => {
+  const program = document.querySelector('input[name="editor-env-program"]:checked')?.value || 'auto';
+  elements.editorEnvProgress.textContent = '保存中…';
+  elements.editorEnvError.textContent = '';
+  try {
+    state.editorEnv = await api('/api/editor', {
+      method: 'POST',
+      body: JSON.stringify({
+        program,
+        command: elements.editorEnvCommand.value.trim(),
+        appName: elements.editorEnvAppName.value.trim(),
+      }),
+    });
+    applyEditorAvailability();
+    renderEditorEnvDialog();
+    elements.editorEnvProgress.textContent = '已保存';
+    setTimeout(() => { elements.editorEnvProgress.textContent = ''; }, 1500);
+  } catch (error) {
+    elements.editorEnvError.textContent = error.message;
+    elements.editorEnvProgress.textContent = '';
+  }
+});
 elements.dialogClose.addEventListener('click', closeOpenDialog);
 elements.localTab.addEventListener('click', () => setOpenMode('local'));
 elements.remoteTab.addEventListener('click', () => setOpenMode('remote'));
@@ -1987,6 +2212,11 @@ elements.openDialog.addEventListener('cancel', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (editor.quickpickKeydown(event)) return;
+  if (event.key === 'Escape' && !elements.commitOverlay.hidden) {
+    event.preventDefault();
+    closeCommitOverlay();
+    return;
+  }
   if (event.key === 'Escape' && state.questionOpen && !state.explaining) {
     event.preventDefault();
     closeQuestion();
@@ -2025,6 +2255,7 @@ initSplitter('right');
 populateThemes();
 applyShellTheme(editor.setTheme(state.theme));
 loadReadingHistory();
+loadEditorEnv().catch(() => {});
 const { createLlmSettings } = await import('./llm-settings.js');
 const llmSettings = createLlmSettings({
   api,

@@ -1,11 +1,9 @@
+// one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 文本检索兜底与 code-reader 的 LSP 回退路径强绑定
+// grill: 成品检索=skill 库无 code-reader 文本符号检索成品; 输入固定=仓库根/文件/行列/内容; 步骤机械=取词+git grep+打分/去重; 判读固定=定义形态与命中行; 失效场景=构造不出（仅本应用）
 // 文本检索兜底：LSP 无结果时，按定义形态打分在源码中定位符号。
-import { execFile } from 'node:child_process';
 import path from 'node:path';
-import { promisify } from 'node:util';
-import { readSource } from './git.js';
+import { readSource, runGit } from './git.js';
 
-const execFileAsync = promisify(execFile);
-const MAX_BUFFER = 32 * 1024 * 1024;
 const MAX_RESULTS = 12;
 const MIN_DEFINITION_SCORE = 60;
 const SOURCE_PATHS = ['*.c', '*.h', '*.cc', '*.cpp', '*.hpp', '*.S', '*.s'];
@@ -65,11 +63,12 @@ function isDefinitionTarget(text, identifier) {
 }
 
 async function gitGrepDefinitions(root, identifier) {
+  // 标识符只允许 C 标识符字符，作为参数数组传给 git（shell: false），不存在命令拼接。
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) return [];
   try {
-    const { stdout } = await execFileAsync(
-      'git',
+    const stdout = await runGit(
       ['grep', '-n', '-I', '-w', '-F', '--no-color', '-e', identifier, '--', ...SOURCE_PATHS],
-      { cwd: root, maxBuffer: MAX_BUFFER, timeout: 20_000 },
+      { cwd: root, timeout: 20_000 },
     );
     return stdout.split('\n');
   } catch {

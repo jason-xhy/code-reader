@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WebSocket } from 'ws';
 import { detectSegment } from '../src/faq.js';
 import { detectFunctionSegment } from '../src/faq.js';
 import { parseGoogleResults } from '../src/websearch.js';
@@ -69,6 +70,40 @@ async function api(method, url, body) {
   return { status: response.status, data };
 }
 
+function probeNvim(url, messages, { origin } = {}) {
+  return new Promise((resolve) => {
+    const socket = origin ? new WebSocket(url, { origin }) : new WebSocket(url);
+    let data = '';
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.close();
+      } catch {
+        // 已关闭
+      }
+      resolve(result);
+    };
+    socket.on('open', () => {
+      for (const message of messages) socket.send(JSON.stringify(message));
+    });
+    socket.on('message', (raw) => {
+      let message;
+      try {
+        message = JSON.parse(raw.toString('utf8'));
+      } catch {
+        return;
+      }
+      if (message.t === 'd') data += message.d;
+      if (data.includes('ping')) finish({ ok: true, data });
+    });
+    socket.on('error', (error) => finish({ ok: false, error: error.message, data }));
+    socket.on('close', (code) => finish({ ok: data.includes('ping'), code, data }));
+    setTimeout(() => finish({ ok: false, error: 'timeout', data }), 5000);
+  });
+}
+
 async function waitForServer() {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
@@ -119,6 +154,7 @@ const server = spawn(process.execPath, ['server.js'], {
     LLM_MODEL: 'stub-model',
     LLM_BASE_URL: 'http://127.0.0.1:8899/v1',
     LLM_PROTOCOL: 'openai',
+    CODE_READER_NVIM: '/bin/cat',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -383,6 +419,26 @@ try {
   assert(appSource.includes('function-history?') && appSource.includes('renderFilteredTree') && appSource.includes('function focusTree'), '前端含函数历史/过滤/文件树聚焦');
   assert(html.includes('函数提交历史'), '首页函数提交历史标题');
   assert(!html.includes('/vendor/ace/ace.js'), '首页不再加载 Ace');
+
+  assert(html.includes('tab-nvim') && html.includes('nvim-term') && html.includes('nvim-status'), '首页包含 nvim 面板容器');
+  assert(html.includes('commit-overlay') && html.includes('editor-env-dialog'), '首页包含提交弹窗与编辑器环境对话框');
+  assert(appSource.includes('function showCommit') && appSource.includes('faq-toggle'), '前端提交弹窗与 FAQ 折叠实现存在');
+  const editorEnv = await api('GET', '/api/editor');
+  assert(editorEnv.status === 200 && Boolean(editorEnv.data.nvim) && Boolean(editorEnv.data.active), '编辑器环境接口返回探测结果', JSON.stringify(editorEnv.data).slice(0, 200));
+  const builtin = await api('POST', '/api/editor', { program: 'builtin' });
+  assert(builtin.status === 200 && builtin.data.active?.program === 'builtin' && builtin.data.available === false, '可切换到内置编辑器');
+  const nvimBlocked = await probeNvim(`ws://127.0.0.1:8799/nvim?repository=${encodeURIComponent(id)}`, []);
+  assert(!nvimBlocked.ok, '内置模式下 nvim WS 被拒绝', JSON.stringify(nvimBlocked).slice(0, 200));
+  const restored = await api('POST', '/api/editor', { program: 'auto' });
+  assert(restored.status === 200 && restored.data.saved?.program === 'auto', '可恢复自动选择');
+  const nvimEcho = await probeNvim(`ws://127.0.0.1:8799/nvim?repository=${encodeURIComponent(id)}`, [{ t: 'i', d: 'ping\n' }]);
+  assert(nvimEcho.ok, 'nvim WS/PTY 双向转发（stub 回显）', JSON.stringify(nvimEcho).slice(0, 200));
+  const nvimBadOrigin = await probeNvim(`ws://127.0.0.1:8799/nvim?repository=${encodeURIComponent(id)}`, [], { origin: 'http://evil.example' });
+  assert(!nvimBadOrigin.ok, 'nvim WS 拒绝非本机来源', JSON.stringify(nvimBadOrigin).slice(0, 200));
+  const terminalBundle = await fetch(base + '/vendor/xterm/terminal.bundle.js');
+  assert(terminalBundle.status === 200, 'xterm 终端预构建包可访问');
+  const xtermCss = await fetch(base + '/vendor/xterm/xterm.css');
+  assert(xtermCss.status === 200, 'xterm 样式可访问');
 } catch (error) {
   fail(`未捕获异常：${error.stack || error.message}`);
 } finally {

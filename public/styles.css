@@ -169,6 +169,117 @@ input:disabled { opacity: .45; }
 .tags { display: flex; gap: 4px; max-width: 170px; overflow: hidden; color: var(--muted); font-size: 10px; }
 .tag-badge { border-color: #4b4163; background: #292238; color: #c6b5ed; }
 .code-area { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.editor-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 34px;
+  border-bottom: 1px solid var(--border);
+  background: #111821;
+  padding: 0 14px;
+}
+.editor-tab {
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  padding: 6px 12px;
+  color: #8b98a8;
+  font-size: 12px;
+  cursor: pointer;
+}
+.editor-tab:hover { color: #d7e0eb; }
+.editor-tab.active { border-color: var(--border); background: var(--panel-deep); color: #d7e0eb; }
+.editor-tabs-hint { margin-left: auto; overflow: hidden; color: #6e7681; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.nvim-host {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-deep);
+}
+.nvim-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  background: #111821;
+  padding: 5px 10px;
+  color: #8b98a8;
+  font-size: 11px;
+}
+.nvim-bar-spacer { flex: 1; }
+.nvim-status { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nvim-term { flex: 1; min-height: 0; padding: 4px 6px; }
+.nvim-term .xterm { height: 100%; }
+.nvim-term .xterm-viewport { background: transparent !important; }
+#code-area.mode-nvim > .code-empty,
+#code-area.mode-nvim > .editor-host,
+#code-area.mode-nvim > .question-editor { display: none !important; }
+
+.commit-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 14, 0.72);
+  padding: 24px;
+}
+.commit-overlay-card {
+  display: flex;
+  flex-direction: column;
+  width: min(980px, 100%);
+  height: min(84vh, 100%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #10161f;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+.commit-overlay-bar { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 10px 14px; }
+.commit-overlay-title { flex: 1; min-width: 0; overflow: hidden; color: #d7e0eb; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.commit-overlay-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; }
+.commit-overlay-body .commit-diff { max-height: none; }
+.commit-overlay-body .commit-message { white-space: pre-wrap; font-size: 12px; }
+
+.faq-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.faq-toggle-icon { margin-left: auto; color: var(--muted); font-size: 10px; }
+.faq-body { margin-top: 8px; }
+.faq-body .faq-meta { margin-top: 8px; }
+
+.editor-env-body { display: flex; flex-direction: column; gap: 10px; }
+.editor-env-detected {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #10161f;
+  padding: 10px 12px;
+  color: #b9c6d6;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.editor-env-row code, .editor-env-body code { color: #9fc7f7; font-family: "SFMono-Regular", Consolas, monospace; }
+.editor-env-options { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.editor-env-options label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.editor-env-field { display: flex; flex-direction: column; gap: 5px; color: #a9b7c7; font-size: 11px; }
+.editor-env-field input { border: 1px solid #33414f; border-radius: 5px; background: #0d1117; padding: 7px 9px; color: #d7e0eb; font-size: 12px; }
+.editor-env-field input:disabled { opacity: 0.45; }
 .code-empty { display: flex; align-items: center; justify-content: center; height: 100%; flex-direction: column; color: var(--muted); text-align: center; }
 .code-empty h1 { margin: 12px 0 4px; color: #c6d0dc; font-size: 17px; font-weight: 500; }
 .code-empty p { margin: 5px 0; font-size: 12px; }

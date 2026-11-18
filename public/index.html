@@ -6,6 +6,7 @@
   <title>Code Reader</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css">
 </head>
 <body>
   <div id="app">
@@ -31,6 +32,7 @@
       <div class="sidebar-footer">
         <span id="file-count">0 个文件</span>
         <div class="footer-actions">
+          <button id="editor-env-settings" class="llm-settings-button" type="button" title="关联本地 vim/neovim 环境">编辑器环境</button>
           <button id="docs-settings" class="llm-settings-button" type="button" title="配置规范与文档目录">知识库</button>
           <button id="llm-status" class="llm-settings-button" type="button" title="配置模型与 API Key">LLM 设置</button>
         </div>
@@ -56,12 +58,26 @@
           <span id="repository-tags" class="tags">Tag —</span>
         </div>
       </header>
+      <div class="editor-tabs" role="tablist" aria-label="编辑模式">
+        <button id="tab-editor" class="editor-tab active" type="button" role="tab" aria-selected="true">编辑器</button>
+        <button id="tab-nvim" class="editor-tab" type="button" role="tab" aria-selected="false" title="在浏览器内运行本地 nvim（真实插件与键位）">nvim</button>
+        <span class="editor-tabs-hint" id="editor-tabs-hint">nvim 为真实本地进程：<kbd>:w</kbd> 会写盘，插件与 LSP 使用你的本地配置</span>
+      </div>
       <div id="repo-notice" class="repo-notice" hidden>
         <span id="repo-notice-text"></span>
         <button id="repo-notice-action" class="button small" type="button" hidden>恢复修改</button>
         <button id="repo-notice-close" class="icon-button notice-close" type="button" aria-label="关闭">×</button>
       </div>
       <section id="code-area" class="code-area" aria-label="源码">
+        <div id="commit-overlay" class="commit-overlay" hidden>
+          <div class="commit-overlay-card" role="dialog" aria-modal="true" aria-label="提交详情">
+            <div class="commit-overlay-bar">
+              <span id="commit-overlay-title" class="commit-overlay-title">提交详情</span>
+              <button id="commit-overlay-close" class="icon-button" type="button" aria-label="关闭">×</button>
+            </div>
+            <div id="commit-overlay-body" class="commit-overlay-body"></div>
+          </div>
+        </div>
         <div id="code-empty" class="code-empty">
           <div class="empty-mark">&lt;/&gt;</div>
           <h1>从代码树选择一个文件</h1>
@@ -91,6 +107,16 @@
             <button id="question-cancel" class="button" type="button">取消</button>
             <button id="question-submit" class="button primary" type="button">确定</button>
           </div>
+        </div>
+        <div id="nvim-host" class="nvim-host" hidden>
+          <div class="nvim-bar">
+            <span id="nvim-status" class="nvim-status">nvim</span>
+            <span class="nvim-bar-spacer"></span>
+            <button id="nvim-open-current" class="button small" type="button" title="在 nvim 中打开 Web 端当前文件与行">打开当前文件</button>
+            <button id="nvim-restart" class="button small" type="button" title="结束并重新启动 nvim">重启</button>
+            <button id="nvim-close" class="button small" type="button" title="关闭 nvim 面板">关闭</button>
+          </div>
+          <div id="nvim-term" class="nvim-term"></div>
         </div>
       </section>
     </main>
@@ -244,6 +270,41 @@
     </div>
   </dialog>
 
+  <dialog id="editor-env-dialog" class="open-dialog editor-env-dialog">
+    <div class="dialog-heading">
+      <div>
+        <h2>编辑器环境</h2>
+        <p>关联本地 vim/neovim 与插件环境；未检测到或选择「内置」时，代码窗口使用 code-reader 自带编辑器。</p>
+      </div>
+      <button id="editor-env-close" class="icon-button" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="editor-env-body">
+      <div id="editor-env-detected" class="editor-env-detected"></div>
+      <div class="editor-env-options">
+        <label><input type="radio" name="editor-env-program" value="auto"> 自动（优先 neovim，其次 vim）</label>
+        <label><input type="radio" name="editor-env-program" value="nvim"> 本地 neovim</label>
+        <label><input type="radio" name="editor-env-program" value="vim"> 本地 vim</label>
+        <label><input type="radio" name="editor-env-program" value="custom"> 自定义命令 / 路径</label>
+        <label><input type="radio" name="editor-env-program" value="builtin"> 只用内置编辑器</label>
+      </div>
+      <label class="editor-env-field" for="editor-env-command">
+        自定义命令
+        <input id="editor-env-command" type="text" placeholder="/usr/local/bin/nvim" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="editor-env-field" for="editor-env-appname">
+        nvim 配置名（NVIM_APPNAME，可选）
+        <input id="editor-env-appname" type="text" placeholder="例如 nvim-kickstart" autocomplete="off" spellcheck="false">
+      </label>
+      <p class="field-help">配置名对应 <code>~/.config/&lt;配置名&gt;</code>；留空使用默认 <code>~/.config/nvim</code>。插件数来自 lazy.nvim / pack / vim-plug 目录统计。</p>
+      <div id="editor-env-error" class="dialog-error" role="alert"></div>
+      <div class="dialog-actions">
+        <span id="editor-env-progress"></span>
+        <button id="editor-env-refresh" class="button" type="button">重新检测</button>
+        <button id="editor-env-save" class="button primary" type="button">保存</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="vim-help-dialog" class="open-dialog vim-help-dialog">
     <div class="dialog-heading">
       <div>
@@ -290,6 +351,7 @@
     <button type="button" data-action="refresh-tree">刷新文件树</button>
   </div>
 
+  <script src="/vendor/xterm/terminal.bundle.js" type="module"></script>
   <script src="/app.js" type="module"></script>
 </body>
 </html>

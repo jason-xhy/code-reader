@@ -10,4 +10,7 @@
 
 Their full license texts are available in `node_modules/` after `npm install`, or from the upstream repositories.
 
+`public/vendor/xterm/terminal.bundle.js` bundles `@xterm/xterm` and `@xterm/addon-fit` (MIT).
+The server uses `node-pty` (MIT) and `ws` (MIT).
+
 The project source itself is licensed under the MIT License; see [LICENSE](LICENSE).
