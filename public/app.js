@@ -85,6 +85,8 @@ const elements = {
 const state = {
   repository: null,
   files: [],
+  filesLower: [],
+  fileSet: new Set(),
   tree: null,
   collapsed: new Set(),
   currentFile: null,
@@ -121,6 +123,8 @@ const savedTheme = localStorage.getItem(THEME_KEY);
 if (savedTheme && THEMES.some((theme) => theme.id === savedTheme)) state.theme = savedTheme;
 
 const jumpStack = [];
+const jumpForwardStack = [];
+let treeFocusIndex = -1;
 let editor = null;
 
 async function api(url, options = {}) {
@@ -535,6 +539,50 @@ function persistCollapsed() {
   }
 }
 
+const TREE_FILTER_LIMIT = 200;
+
+function renderFilteredTree(filter) {
+  const matches = [];
+  let total = 0;
+  for (let index = 0; index < state.files.length; index += 1) {
+    if (!state.filesLower[index].includes(filter)) continue;
+    total += 1;
+    if (matches.length < TREE_FILTER_LIMIT) matches.push(state.files[index]);
+  }
+  if (!total) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-tree';
+    empty.textContent = '没有匹配的文件';
+    elements.fileTree.append(empty);
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const filePath of matches) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `tree-row tree-row-flat${state.currentFile === filePath ? ' active' : ''}`;
+    button.title = filePath;
+    button.dataset.path = filePath;
+    button.dataset.directory = 'false';
+    const icon = fileIcon(filePath);
+    const iconElement = document.createElement('span');
+    iconElement.className = `file-icon ${icon.className}`;
+    iconElement.textContent = icon.label;
+    const name = document.createElement('span');
+    name.className = 'tree-name';
+    name.textContent = filePath;
+    button.append(iconElement, name);
+    fragment.append(button);
+  }
+  elements.fileTree.append(fragment);
+  if (total > matches.length) {
+    const note = document.createElement('div');
+    note.className = 'empty-tree';
+    note.textContent = `仅显示前 ${matches.length} 个匹配（共 ${total} 个），请继续输入缩小范围`;
+    elements.fileTree.append(note);
+  }
+}
+
 function renderTree() {
   elements.fileTree.replaceChildren();
   if (!state.tree) {
@@ -545,6 +593,10 @@ function renderTree() {
     return;
   }
   const filter = elements.treeFilter.value.trim().toLowerCase();
+  if (filter) {
+    renderFilteredTree(filter);
+    return;
+  }
   const fragment = document.createDocumentFragment();
   let visible = 0;
 
@@ -859,6 +911,8 @@ async function loadRepository(data, { preserveFile = false, stashNotice = true }
   const previousFile = preserveFile ? state.currentFile : null;
   state.repository = data.repository;
   state.files = data.files;
+  state.filesLower = data.files.map((filePath) => filePath.toLowerCase());
+  state.fileSet = new Set(data.files);
   state.status = data.status || {};
   state.tree = buildTree(data.files);
   const storedCollapsed = restoreCollapsed();
@@ -883,6 +937,7 @@ async function loadRepository(data, { preserveFile = false, stashNotice = true }
   state.faqEntries = [];
   state.faqKey = null;
   jumpStack.length = 0;
+  jumpForwardStack.length = 0;
   closeQuestion();
   elements.treeFilter.value = '';
   renderRepository();
@@ -981,7 +1036,7 @@ async function selectFile(filePath, reveal = null) {
     if (reveal) editor.revealPosition(reveal.line, reveal.character);
     const line = reveal?.line || 1;
     state.activeLine = line;
-    fetchLineHistory(line);
+    fetchFunctionHistory(line);
     fetchFaq(line);
     scheduleHistoryTouch();
   } catch (error) {
@@ -994,12 +1049,12 @@ async function selectFile(filePath, reveal = null) {
   }
 }
 
-async function fetchLineHistory(line) {
+async function fetchFunctionHistory(line) {
   if (!state.repository || state.currentFile === null || state.activeLine !== line) return;
   const filePath = state.currentFile;
   const key = `${state.repository.head}:${filePath}:${line}`;
   if (state.historyCache.has(key)) {
-    state.history = { path: filePath, line, status: 'done', commits: state.historyCache.get(key) };
+    state.history = { path: filePath, line, status: 'done', ...state.historyCache.get(key) };
     renderHistory();
     return;
   }
@@ -1009,10 +1064,10 @@ async function fetchLineHistory(line) {
   state.history = { path: filePath, line, status: 'loading', commits: [] };
   renderHistory();
   try {
-    const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/line-history?path=${encodeURIComponent(filePath)}&line=${line}`, { signal: controller.signal });
+    const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/function-history?path=${encodeURIComponent(filePath)}&line=${line}`, { signal: controller.signal });
     if (state.activeLine !== line || state.currentFile !== filePath) return;
-    state.historyCache.set(key, data.commits);
-    state.history = { path: filePath, line, status: 'done', commits: data.commits };
+    state.historyCache.set(key, data);
+    state.history = { path: filePath, line, status: 'done', ...data };
     renderHistory();
   } catch (error) {
     if (error.name === 'AbortError' || state.activeLine !== line || state.currentFile !== filePath) return;
@@ -1202,16 +1257,17 @@ function renderHistory() {
   const history = state.history;
   elements.historyContent.replaceChildren();
   if (!history) {
-    elements.historyAnchor.textContent = '光标所在行';
+    elements.historyAnchor.textContent = '当前函数';
     elements.historyContent.className = 'insight-content empty-insight';
-    elements.historyContent.textContent = '移动光标查看该行最后一次变更';
+    elements.historyContent.textContent = '移动光标查看当前函数的最近提交';
     return;
   }
   elements.historyContent.className = 'insight-content';
-  elements.historyAnchor.textContent = `${history.path}:${history.line}`;
+  const range = history.lineStart && history.lineEnd ? `${history.lineStart}-${history.lineEnd}` : history.line;
+  elements.historyAnchor.textContent = `${history.path}:${range}${history.symbol ? ` · ${history.symbol}` : ''}`;
   if (history.status === 'loading') {
     elements.historyContent.className = 'insight-content empty-insight loading';
-    elements.historyContent.textContent = '正在查询行级 Git 历史…';
+    elements.historyContent.textContent = '正在查询函数级 Git 历史…';
     return;
   }
   if (history.status === 'error') {
@@ -1223,7 +1279,7 @@ function renderHistory() {
   }
   if (history.commits.length === 0) {
     elements.historyContent.className = 'insight-content empty-insight';
-    elements.historyContent.textContent = '该行没有提交历史';
+    elements.historyContent.textContent = '该函数没有提交历史';
     return;
   }
   const list = document.createElement('div');
@@ -1480,15 +1536,16 @@ async function jumpTo(location, pushCurrent = true) {
   if (!state.repository || !location) return;
   if (pushCurrent && state.currentFile) {
     jumpStack.push({ path: state.currentFile, line: editor.getCursor().line, character: editor.getCursor().character });
+    jumpForwardStack.length = 0;
   }
   if (location.path === state.currentFile) {
     editor.revealPosition(location.line, location.character);
     state.activeLine = location.line;
-    fetchLineHistory(location.line);
+    fetchFunctionHistory(location.line);
   } else {
     await selectFile(location.path, { line: location.line, character: location.character });
     state.activeLine = location.line;
-    fetchLineHistory(location.line);
+    fetchFunctionHistory(location.line);
   }
 }
 
@@ -1550,13 +1607,116 @@ async function gotoReferences() {
   }
 }
 
+function currentLocation() {
+  return state.currentFile
+    ? { path: state.currentFile, line: editor.getCursor().line, character: editor.getCursor().character }
+    : null;
+}
+
 async function jumpBack() {
   const target = jumpStack.pop();
   if (!target) {
     elements.sourceStatus.textContent = '跳转栈为空';
+    return false;
+  }
+  const current = currentLocation();
+  if (current) jumpForwardStack.push(current);
+  await jumpTo(target, false);
+  return true;
+}
+
+async function jumpForward() {
+  const target = jumpForwardStack.pop();
+  if (!target) return false;
+  const current = currentLocation();
+  if (current) jumpStack.push(current);
+  await jumpTo(target, false);
+  return true;
+}
+
+function resolveExPath(value) {
+  let target = String(value || '').trim().replace(/^['"]|['"]$/g, '');
+  if (!target) return null;
+  target = target.replace(/^\.\//, '');
+  if (target.startsWith('/')) {
+    const root = String(state.repository?.root || '').replace(/\/+$/, '');
+    if (!root || !(target === root || target.startsWith(`${root}/`))) return null;
+    target = target.slice(root.length).replace(/^\/+/, '');
+  }
+  if (state.fileSet.has(target)) return target;
+  const lower = target.toLowerCase();
+  const exact = state.files.find((filePath, index) => state.filesLower[index] === lower);
+  if (exact) return exact;
+  return state.files.find((filePath, index) => state.filesLower[index].endsWith(`/${lower}`)) || null;
+}
+
+function openExFile(value) {
+  const target = resolveExPath(value);
+  if (!target) {
+    elements.sourceStatus.textContent = `未找到文件：${value}`;
+    return false;
+  }
+  jumpStack.length = 0;
+  jumpForwardStack.length = 0;
+  selectFile(target);
+  return true;
+}
+
+function exFileCompletions(prefix) {
+  const lower = String(prefix || '').toLowerCase();
+  if (!lower) return [];
+  const starts = [];
+  const contains = [];
+  for (let index = 0; index < state.files.length; index += 1) {
+    const filePath = state.files[index];
+    const fileLower = state.filesLower[index];
+    if (fileLower.startsWith(lower)) starts.push(filePath);
+    else if (fileLower.includes(lower)) contains.push(filePath);
+    if (starts.length >= 12) break;
+  }
+  return [...starts, ...contains].slice(0, 12);
+}
+
+function treeRows() {
+  return Array.from(elements.fileTree.querySelectorAll('.tree-row'));
+}
+
+function updateTreeFocus() {
+  const rows = treeRows();
+  if (!rows.length) return;
+  treeFocusIndex = Math.max(0, Math.min(treeFocusIndex, rows.length - 1));
+  rows.forEach((row, index) => row.classList.toggle('key-focus', index === treeFocusIndex));
+  rows[treeFocusIndex].scrollIntoView({ block: 'nearest' });
+}
+
+function focusTree() {
+  if (!state.repository) return false;
+  const rows = treeRows();
+  if (!rows.length) return false;
+  treeFocusIndex = rows.findIndex((row) => row.dataset.path === state.currentFile);
+  if (treeFocusIndex < 0) treeFocusIndex = 0;
+  updateTreeFocus();
+  elements.fileTree.focus();
+  return true;
+}
+
+async function activateTreeRow(row) {
+  if (!row) return;
+  if (row.dataset.directory === 'true') {
+    const target = row.dataset.path;
+    if (state.collapsed.has(target)) state.collapsed.delete(target);
+    else state.collapsed.add(target);
+    persistCollapsed();
+    renderTree();
+    treeFocusIndex = treeRows().findIndex((item) => item.dataset.path === target);
+    updateTreeFocus();
+    elements.fileTree.focus();
     return;
   }
-  await jumpTo(target, false);
+  jumpStack.length = 0;
+  jumpForwardStack.length = 0;
+  await selectFile(row.dataset.path);
+  editor.focus();
 }
 
 editor = createEditor({
@@ -1567,7 +1727,7 @@ editor = createEditor({
       renderHistory();
       return;
     }
-    fetchLineHistory(line);
+    fetchFunctionHistory(line);
     fetchFaq(line);
     scheduleHistoryTouch();
   },
@@ -1581,7 +1741,19 @@ editor = createEditor({
     gotoReferences();
   },
   onJumpBack() {
-    jumpBack();
+    return jumpBack();
+  },
+  onJumpForward() {
+    return jumpForward();
+  },
+  onFocusTree() {
+    return focusTree();
+  },
+  onOpenFile(value) {
+    return openExFile(value);
+  },
+  onExComplete(value) {
+    return exFileCompletions(value);
   },
   onHelp() {
     elements.vimHelpDialog.showModal();
@@ -1723,7 +1895,35 @@ elements.questionInput.addEventListener('keydown', (event) => {
   event.preventDefault();
   submitQuestion();
 });
-elements.treeFilter.addEventListener('input', renderTree);
+let treeFilterTimer = null;
+elements.treeFilter.addEventListener('input', () => {
+  clearTimeout(treeFilterTimer);
+  treeFilterTimer = setTimeout(renderTree, 120);
+});
+elements.fileTree.addEventListener('keydown', (event) => {
+  const rows = treeRows();
+  if (!rows.length) return;
+  if (event.key === 'j' || event.key === 'ArrowDown') {
+    treeFocusIndex = Math.min(rows.length - 1, treeFocusIndex + 1);
+  } else if (event.key === 'k' || event.key === 'ArrowUp') {
+    treeFocusIndex = Math.max(0, treeFocusIndex - 1);
+  } else if (event.key === 'Enter' || event.key === 'o') {
+    event.preventDefault();
+    event.stopPropagation();
+    activateTreeRow(rows[treeFocusIndex]);
+    return;
+  } else if (event.key === 'q' || event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    editor.focus();
+    return;
+  } else {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  updateTreeFocus();
+});
 elements.fileTree.addEventListener('click', (event) => {
   const row = event.target.closest('.tree-row');
   if (!row) return;
@@ -1735,6 +1935,7 @@ elements.fileTree.addEventListener('click', (event) => {
     renderTree();
   } else {
     jumpStack.length = 0;
+    jumpForwardStack.length = 0;
     selectFile(row.dataset.path);
   }
 });

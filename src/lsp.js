@@ -5,6 +5,7 @@ import path from 'node:path';
 import { AppError } from './errors.js';
 import { listSourceFiles, readSource } from './git.js';
 import { clearCompilationDatabase, prepareCompilationDatabase } from './compile-db.js';
+import { searchSymbolDefinitions } from './symbol-search.js';
 
 const REQUEST_TIMEOUT = 60_000;
 const MAX_OPEN_DOCUMENTS = 200;
@@ -351,7 +352,33 @@ export function lspStatus(repository) {
 }
 
 export async function lspGotoDefinition(repository, body) {
-  return { locations: await sessionFor(repository).gotoDefinition(body.path, body.line, body.character, body.content) };
+  const session = sessionFor(repository);
+  let lspError = null;
+  let locations = [];
+  try {
+    locations = await session.gotoDefinition(body.path, body.line, body.character, body.content);
+  } catch (error) {
+    lspError = error;
+  }
+  if (locations.length) return { locations };
+  let fallback = [];
+  try {
+    fallback = await searchSymbolDefinitions({
+      root: repository.root,
+      filePath: body.path,
+      line: body.line,
+      character: body.character,
+      content: body.content,
+    });
+  } catch {
+    fallback = [];
+  }
+  if (fallback.length) {
+    if (lspError) console.error('[lsp] 定义请求失败，已回退到文本检索：', lspError?.message || lspError);
+    return { locations: fallback };
+  }
+  if (lspError) throw lspError;
+  return { locations };
 }
 
 export async function lspReferences(repository, body) {

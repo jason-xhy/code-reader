@@ -230,9 +230,13 @@ export async function explainSource(source, filePath, line, question, options = 
     throw new AppError('LLM 未配置，请点击左下角“LLM 设置”选择模型并保存 API Key', 503, 'LLM_NOT_CONFIGURED');
   }
   const context = contextFor(source, line);
+  const currentLine = (source.content.split('\n')[line - 1] || '').slice(0, 400);
   let documentation = { hits: [], config: { webEnabled: false }, stats: { files: 0, chunks: 0 } };
   try {
-    documentation = await searchDocumentation({ repositoryRoot: options.repositoryRoot, query: question });
+    documentation = await searchDocumentation({
+      repositoryRoot: options.repositoryRoot,
+      query: [question, filePath, currentLine, currentLine.replace(/_+/g, ' ')].join(' '),
+    });
   } catch (error) {
     console.error('[llm] 本地文档检索失败：', error?.message || error);
   }

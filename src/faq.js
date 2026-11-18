@@ -214,6 +214,104 @@ export function detectSegment(content, line) {
   };
 }
 
+function looksLikeFunctionStart(text) {
+  if (!text || /^\s/.test(text)) return false;
+  if (/^(#|\}|\/\/|\/\*|\*)/.test(text)) return false;
+  if (/;\s*$/.test(text)) return false;
+  if (/^(typedef|struct|union|enum|extern|if|for|while|switch|return|case|do|else)\b/.test(text)) return false;
+  return /^[A-Za-z_][A-Za-z0-9_\s*]*\b[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(text);
+}
+
+// 光标所在函数的完整范围（含跨多行的参数列表；游标停在签名行时也正确）。
+// detectSegment 是 FAQ 的“最小代码块”，嵌套 switch/if 会返回内层块，不能当函数范围。
+export function detectFunctionSegment(content, line) {
+  const lines = String(content || '').split('\n');
+  const target = Math.min(Math.max(1, line), Math.max(1, lines.length));
+  let start = -1;
+  for (let index = target - 1; index >= 0; index -= 1) {
+    if (looksLikeFunctionStart(lines[index])) {
+      start = index;
+      break;
+    }
+  }
+  if (start === -1) return null;
+  let braceLine = -1;
+  let braceColumn = -1;
+  for (let index = start; index < lines.length && index <= start + 40; index += 1) {
+    const text = lines[index];
+    const brace = text.indexOf('{');
+    const semicolon = text.indexOf(';');
+    if (brace !== -1 && (semicolon === -1 || brace < semicolon)) {
+      braceLine = index;
+      braceColumn = brace;
+      break;
+    }
+    if (semicolon !== -1 && (brace === -1 || semicolon < brace)) return null;
+  }
+  if (braceLine === -1) return null;
+  let depth = 0;
+  let inBlockComment = false;
+  let inLineComment = false;
+  let inString = false;
+  let quote = '';
+  let endLine = -1;
+  for (let index = braceLine; index < lines.length; index += 1) {
+    const text = lines[index];
+    const from = index === braceLine ? braceColumn : 0;
+    for (let column = from; column < text.length; column += 1) {
+      const char = text[column];
+      const next = text[column + 1];
+      if (inLineComment) break;
+      if (inBlockComment) {
+        if (char === '*' && next === '/') {
+          inBlockComment = false;
+          column += 1;
+        }
+        continue;
+      }
+      if (inString) {
+        if (char === '\\') {
+          column += 1;
+          continue;
+        }
+        if (char === quote) inString = false;
+        continue;
+      }
+      if (char === '/' && next === '/') {
+        inLineComment = true;
+        break;
+      }
+      if (char === '/' && next === '*') {
+        inBlockComment = true;
+        column += 1;
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        inString = true;
+        quote = char;
+        continue;
+      }
+      if (char === '{') depth += 1;
+      else if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          endLine = index + 1;
+          break;
+        }
+      }
+    }
+    inLineComment = false;
+    if (endLine !== -1) break;
+  }
+  if (endLine === -1) return null;
+  if (target < start + 1 || target > endLine) return null;
+  const signature = lines.slice(start, Math.min(braceLine + 1, start + 20)).join(' ');
+  const paren = signature.indexOf('(');
+  const names = signature.slice(0, paren === -1 ? signature.length : paren).match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+  const symbol = names[names.length - 1] || '';
+  return { lineStart: start + 1, lineEnd: endLine, symbol, kind: 'function' };
+}
+
 export async function recordFaq(repositoryId, { file, line, question, explanation, model, head, segment }) {
   const entries = await loadEntries(repositoryId);
   const now = new Date().toISOString();

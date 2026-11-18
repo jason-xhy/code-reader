@@ -10,12 +10,12 @@ import { dataPath } from './paths.js';
 const execFileAsync = promisify(execFile);
 const configPath = dataPath('docs-config.json');
 const MAX_DIRECTORIES = 10;
-const MAX_FILES = 2500;
+const MAX_FILES = 12000;
 const MAX_PDF_FILES = 200;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
-const MAX_CHUNKS_PER_FILE = 80;
+const MAX_CHUNKS_PER_FILE = 200;
 const CHUNK_SIZE = 1200;
-const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_TTL_MS = 60 * 60 * 1000;
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.cache', 'build', 'dist', '.venv', 'venv', '__pycache__', 'target']);
 const TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.rst', '.txt', '.adoc', '.html', '.htm', '.tex', '.json', '.yaml', '.yml']);
 
@@ -134,8 +134,8 @@ async function readPdf(filePath) {
   try {
     const { stdout } = await execFileAsync(
       'pdftotext',
-      ['-layout', '-f', '1', '-l', '300', filePath, '-'],
-      { timeout: 20_000, maxBuffer: 10 * 1024 * 1024 },
+      ['-layout', filePath, '-'],
+      { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 },
     );
     return stdout;
   } catch {
@@ -155,6 +155,16 @@ async function readDocument(filePath, extension) {
   } catch {
     return '';
   }
+}
+
+function sampleChunks(chunks, limit) {
+  if (chunks.length <= limit) return chunks;
+  if (limit < 2) return [chunks[0]];
+  const sampled = [];
+  for (let index = 0; index < limit; index += 1) {
+    sampled.push(chunks[Math.round((index * (chunks.length - 1)) / (limit - 1))]);
+  }
+  return sampled;
 }
 
 function chunkText(text, source, rel, root) {
@@ -180,7 +190,7 @@ function chunkText(text, source, rel, root) {
     buffer += `${buffer ? '\n\n' : ''}${value}`;
   }
   flush();
-  return chunks.slice(0, MAX_CHUNKS_PER_FILE);
+  return sampleChunks(chunks, MAX_CHUNKS_PER_FILE);
 }
 
 function tokenize(text) {
@@ -230,8 +240,12 @@ async function collectChunks(directories) {
   return { chunks, stats };
 }
 
+function isTableOfContents(text) {
+  return (text.match(/\.{4,}/g) || []).length >= 3;
+}
+
 function scoreChunks(chunks, query) {
-  const queryTokens = [...new Set(tokenize(query))].slice(0, 64);
+  const queryTokens = [...new Set(tokenize(query))].slice(0, 128);
   if (!queryTokens.length || !chunks.length) return [];
   const documentFrequency = new Map();
   let totalLength = 0;
@@ -255,6 +269,7 @@ function scoreChunks(chunks, query) {
       const idf = Math.log(1 + (total - df + 0.5) / (df + 0.5));
       score += idf * ((frequency * 2.2) / (frequency + 1.2 * (0.25 + 0.75 * (chunk.tokens.length / averageLength))));
     }
+    if (isTableOfContents(chunk.text)) score *= 0.35;
     if (score > 0.8) scored.push({ ...chunk, score });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -262,10 +277,10 @@ function scoreChunks(chunks, query) {
   const hits = [];
   for (const hit of scored) {
     const count = perSource.get(hit.source) || 0;
-    if (count >= 2) continue;
+    if (count >= 3) continue;
     perSource.set(hit.source, count + 1);
     hits.push(hit);
-    if (hits.length >= 4) break;
+    if (hits.length >= 6) break;
   }
   return hits;
 }

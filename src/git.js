@@ -5,6 +5,7 @@ import { realpath, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
 import { AppError } from './errors.js';
+import { detectFunctionSegment, detectSegment } from './faq.js';
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_GIT_OUTPUT = 32 * 1024 * 1024;
@@ -16,6 +17,8 @@ const NETWORK_ENV = {
 };
 const BRANCH_FORMAT = '%(refname)%00%(refname:short)%00%(HEAD)%00%(upstream:short)';
 const CODE_READER_STASH_PREFIX = 'code-reader:';
+const FUNCTION_HISTORY_CACHE_LIMIT = 500;
+const functionHistoryCache = new Map();
 
 function isCodeReaderStash(subject) {
   return String(subject || '').includes(CODE_READER_STASH_PREFIX);
@@ -214,6 +217,90 @@ export async function lineHistory(root, filePath, line) {
     hash: header[1].slice(0, 10),
     subject: summary ? summary.slice('summary '.length) : '',
   }];
+}
+
+// 函数级历史：blame 当前函数行区间，按提交时间取最近 5 条；按 (仓库,文件,区间,HEAD) 缓存。
+export async function functionHistory(root, filePath, line) {
+  validateRelativePath(filePath);
+  if (!Number.isInteger(line) || line < 1) {
+    throw new AppError('行号必须是正整数', 400, 'INVALID_LINE');
+  }
+  const source = await readSource(root, filePath);
+  if (line > source.lines) throw new AppError('行号超出文件范围', 400, 'INVALID_LINE');
+  const segment = detectFunctionSegment(source.content, line) || detectSegment(source.content, line);
+  const lineStart = segment?.lineStart || line;
+  const lineEnd = segment?.lineEnd || line;
+  let head = '';
+  try {
+    head = (await runGit(['rev-parse', 'HEAD'], { cwd: root })).trim();
+  } catch {
+    head = 'unborn';
+  }
+  const key = [root, filePath, lineStart, lineEnd, head].join('\0');
+  const cached = functionHistoryCache.get(key);
+  if (cached) return { ...cached, cached: true };
+  try {
+    await runGit(['ls-files', '--error-unmatch', '--', filePath], { cwd: root });
+  } catch {
+    throw new AppError('未跟踪文件没有提交历史', 400, 'UNTRACKED_FILE');
+  }
+  const output = await runGit([
+    'blame',
+    '--line-porcelain',
+    '-L', `${lineStart},${lineEnd}`,
+    '--', filePath,
+  ], { cwd: root, timeout: 60_000 });
+  const hashes = [];
+  const seen = new Set();
+  for (const entry of output.split('\n')) {
+    const header = /^([0-9a-f]{40}) \d+ \d+/.exec(entry);
+    if (!header) continue;
+    const hash = header[1];
+    if (!seen.has(hash)) {
+      seen.add(hash);
+      hashes.push(hash);
+    }
+    if (hashes.length >= 500) break;
+  }
+  const real = hashes.filter((hash) => !/^0+$/.test(hash));
+  const commits = [];
+  if (real.length) {
+    try {
+      const meta = await runGit([
+        'log',
+        '--no-walk=unsorted',
+        '--format=%H%x00%an%x00%aI%x00%s',
+        ...real,
+      ], { cwd: root, timeout: 30_000 });
+      for (const row of meta.split('\n')) {
+        if (!row) continue;
+        const [hash, author, date, subject] = row.split('\0');
+        if (!hash) continue;
+        commits.push({ hash: hash.slice(0, 10), author: author || '', date: date || '', subject: subject || '' });
+      }
+      commits.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    } catch {
+      // 元数据失败时保留 blame 顺序，至少返回提交号
+      for (const hash of real) commits.push({ hash: hash.slice(0, 10), author: '', date: '', subject: '' });
+    }
+  }
+  if (hashes.some((hash) => /^0+$/.test(hash))) {
+    commits.unshift({ hash: '0000000', author: '', date: '', subject: '未提交的工作区修改' });
+  }
+  const result = {
+    path: filePath,
+    line,
+    lineStart,
+    lineEnd,
+    symbol: segment?.symbol || null,
+    head,
+    commits: commits.slice(0, 5),
+  };
+  functionHistoryCache.set(key, result);
+  if (functionHistoryCache.size > FUNCTION_HISTORY_CACHE_LIMIT) {
+    functionHistoryCache.delete(functionHistoryCache.keys().next().value);
+  }
+  return result;
 }
 
 async function stashEntries(root) {

@@ -25,7 +25,7 @@
         <label class="search-label" for="tree-filter">代码树</label>
         <input id="tree-filter" type="search" placeholder="过滤文件…" autocomplete="off" disabled>
       </div>
-      <nav id="file-tree" class="file-tree" aria-label="代码树">
+      <nav id="file-tree" class="file-tree" aria-label="代码树" tabindex="0">
         <div class="empty-tree">打开一个本地或远程 Git 仓库</div>
       </nav>
       <div class="sidebar-footer">
@@ -65,7 +65,7 @@
         <div id="code-empty" class="code-empty">
           <div class="empty-mark">&lt;/&gt;</div>
           <h1>从代码树选择一个文件</h1>
-          <p>光标移动即可查看行提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用，<kbd>Ctrl-o</kbd> 跳回，<kbd>\c</kbd> 就当前行提问。</p>
+          <p>光标移动即可查看当前函数的提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用，<kbd>Ctrl-o</kbd> 跳回，<kbd>\e</kbd> 聚焦文件树，<kbd>\c</kbd> 就当前行提问。</p>
           <p>编辑器为完整 Vim 模式（<kbd>i</kbd>/<kbd>Esc</kbd> 切换，<kbd>/</kbd> 搜索，<kbd>u</kbd> 撤销，<kbd>:help</kbd> 查看全部快捷键）；修改仅保存在内存，不会写回磁盘。</p>
         </div>
         <div id="editor-host" class="editor-host" tabindex="0" hidden>
@@ -104,10 +104,10 @@
       </div>
       <section class="insight-section history-section">
         <div class="section-heading">
-          <h2>行提交历史</h2>
-          <span id="history-anchor" class="section-anchor">悬停源码行</span>
+          <h2>函数提交历史</h2>
+          <span id="history-anchor" class="section-anchor">当前函数</span>
         </div>
-        <div id="history-content" class="insight-content empty-insight">显示该行最后一次变更</div>
+        <div id="history-content" class="insight-content empty-insight">显示当前函数的最近提交</div>
       </section>
       <section id="faq-section" class="insight-section faq-section" hidden>
         <div class="section-heading">
@@ -275,7 +275,7 @@
       </section>
       <section>
         <h3>本应用扩展</h3>
-        <p><kbd>gd</kbd> LSP 跳定义（也支持 <kbd>Ctrl-]</kbd>）· <kbd>gr</kbd> 查找引用 · <kbd>\c</kbd> 就当前行向 LLM 提问 · <kbd>:ask</kbd> <kbd>:gd</kbd> <kbd>:gr</kbd> <kbd>:help</kbd></p>
+        <p><kbd>gd</kbd> LSP 跳定义（也支持 <kbd>Ctrl-]</kbd>）· <kbd>gr</kbd> 查找引用 · <kbd>\e</kbd> 聚焦文件树（<kbd>j</kbd><kbd>k</kbd> 选择、<kbd>Enter</kbd> 打开、<kbd>q</kbd> 返回）· <kbd>\c</kbd> 就当前行向 LLM 提问 · <kbd>:e</kbd> <kbd>:vi</kbd> 按路径打开文件（<kbd>Tab</kbd> 补全）· <kbd>:ask</kbd> <kbd>:gd</kbd> <kbd>:gr</kbd> <kbd>:tree</kbd> <kbd>:help</kbd></p>
       </section>
       <section class="vim-help-note">
         <h3>浏览器限制</h3>

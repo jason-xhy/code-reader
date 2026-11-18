@@ -7,7 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { detectSegment } from '../src/faq.js';
+import { detectFunctionSegment } from '../src/faq.js';
 import { parseGoogleResults } from '../src/websearch.js';
+import { searchSymbolDefinitions, wordAt } from '../src/symbol-search.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const base = 'http://127.0.0.1:8799';
@@ -262,6 +264,48 @@ try {
   const faqAfter = await api('GET', `${repoBase}/faq?path=base.txt&line=2`);
   assert(faqAfter.data.entries.length === 0, 'FAQ 删除后不再返回');
 
+  writeFileSync(path.join(work, 'sample.h'), 'struct demo_event {\n\tint value;\n};\n');
+  writeFileSync(path.join(work, 'sample.c'), [
+    '#include "sample.h"',
+    '',
+    'static void demo_handle(struct demo_event *event)',
+    '{',
+    '\tevent->value = 1;',
+    '}',
+    '',
+    'void demo_entry(void)',
+    '{',
+    '\tstruct demo_event event;',
+    '\tdemo_handle(&event);',
+    '}',
+  ].join('\n') + '\n');
+  git(work, 'add', 'sample.c', 'sample.h');
+  git(work, 'commit', '-m', 'sample-symbols');
+  const sampleContent = readFileSync(path.join(work, 'sample.c'), 'utf8');
+  assert(wordAt(sampleContent, 3, 33) === 'demo_event', '文本检索兜底：光标位置取词');
+  const typeDefinitions = await searchSymbolDefinitions({ root: work, filePath: 'sample.c', line: 3, character: 33, content: sampleContent });
+  assert(typeDefinitions.length === 1 && typeDefinitions[0].path === 'sample.h' && typeDefinitions[0].line === 1, '文本检索兜底：结构体定义定位到头文件', JSON.stringify(typeDefinitions));
+  const functionDefinitions = await searchSymbolDefinitions({ root: work, filePath: 'sample.c', line: 11, character: 3, content: sampleContent });
+  assert(functionDefinitions.length === 1 && functionDefinitions[0].path === 'sample.c' && functionDefinitions[0].line === 3, '文本检索兜底：函数调用定位到定义行', JSON.stringify(functionDefinitions));
+
+  const bodySegment = detectFunctionSegment(sampleContent, 5);
+  assert(bodySegment?.lineStart === 3 && bodySegment?.lineEnd === 6 && bodySegment?.symbol === 'demo_handle', '函数范围识别（函数体内）', JSON.stringify(bodySegment));
+  const signatureSegment = detectFunctionSegment(sampleContent, 3);
+  assert(signatureSegment?.lineStart === 3 && signatureSegment?.lineEnd === 6 && signatureSegment?.symbol === 'demo_handle', '函数范围识别（光标在签名行）', JSON.stringify(signatureSegment));
+  const functionHistory = await api('GET', `${repoBase}/function-history?path=sample.c&line=5`);
+  assert(
+    functionHistory.status === 200
+    && functionHistory.data.lineStart === 3
+    && functionHistory.data.lineEnd === 6
+    && functionHistory.data.symbol === 'demo_handle'
+    && functionHistory.data.commits.length === 1
+    && functionHistory.data.commits[0].subject === 'sample-symbols',
+    '函数级历史返回最近提交与函数范围',
+    JSON.stringify(functionHistory.data),
+  );
+  const functionHistoryCached = await api('GET', `${repoBase}/function-history?path=sample.c&line=4`);
+  assert(functionHistoryCached.data.cached === true && functionHistoryCached.data.commits.length === 1, '函数级历史按函数范围命中缓存');
+
   const docsDir = path.join(root, 'docs');
   mkdirSync(docsDir, { recursive: true });
   writeFileSync(path.join(docsDir, 'xhci-spec.md'), '# XHCI\n\nTRB_RING_MAGIC_123 规范要求：传输事件必须带 TRB 指针。\n');
@@ -278,6 +322,21 @@ try {
   const docsExplain = await api('POST', `${repoBase}/explain`, { path: 'base.txt', line: 1, question: 'TRB_RING_MAGIC_123 在规范里怎么要求？' });
   assert(docsExplain.status === 200 && docsExplain.data.sources?.local?.length > 0, '本地 docs 命中并返回来源', JSON.stringify(docsExplain.data.sources));
   assert(lastUserContent.includes('localDocumentation') && lastUserContent.includes('TRB_RING_MAGIC_123'), 'docs 片段进入 LLM 请求');
+  writeFileSync(path.join(docsDir, 'demo-spec.md'), 'demo_handle SPEC_MAGIC transfers events between endpoints and rings.\n');
+  writeFileSync(path.join(docsDir, 'path-spec.md'), 'base.txt SPEC_MAGIC documents the base file.\n');
+  await api('POST', '/api/docs/config', { directories: [docsDir], webEnabled: false });
+  const contextDocs = await api('POST', `${repoBase}/explain`, { path: 'sample.c', line: 3, question: '这个函数做什么？' });
+  assert(
+    contextDocs.data.sources?.local?.some((item) => item.source.includes('demo-spec.md')),
+    '知识库检索自动带上当前行上下文',
+    JSON.stringify(contextDocs.data.sources),
+  );
+  const pathDocs = await api('POST', `${repoBase}/explain`, { path: 'base.txt', line: 1, question: '这一行是什么？' });
+  assert(
+    pathDocs.data.sources?.local?.some((item) => item.source.includes('path-spec.md')),
+    '知识库检索自动带上文件路径',
+    JSON.stringify(pathDocs.data.sources),
+  );
   const docsStats = await api('GET', '/api/docs/config');
   assert(docsStats.status === 200 && docsStats.data.config.directories.length === 1, 'docs 配置回读一致');
   await api('POST', '/api/docs/config', { directories: [], webEnabled: false });
@@ -319,6 +378,10 @@ try {
   assert(bundleText.includes('gruvbox') && bundleText.includes('tokyonight'), 'CM6 包包含主题调色板');
   const editorSource = readFileSync(path.join(repoRoot, 'web-src/editor.js'), 'utf8');
   assert(editorSource.includes("binding.key !== 'Mod-i'"), 'Vim Ctrl-i 不被 CodeMirror selectParentSyntax 覆盖');
+  assert(editorSource.includes("Vim.defineEx('vi'") && editorSource.includes('readerJumpBack'), '编辑器注册 :vi 与应用级 Ctrl-o 跳转');
+  const appSource = readFileSync(path.join(repoRoot, 'public/app.js'), 'utf8');
+  assert(appSource.includes('function-history?') && appSource.includes('renderFilteredTree') && appSource.includes('function focusTree'), '前端含函数历史/过滤/文件树聚焦');
+  assert(html.includes('函数提交历史'), '首页函数提交历史标题');
   assert(!html.includes('/vendor/ace/ace.js'), '首页不再加载 Ace');
 } catch (error) {
   fail(`未捕获异常：${error.stack || error.message}`);

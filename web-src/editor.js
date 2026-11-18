@@ -89,7 +89,7 @@ function languageFor(filePath) {
   return parser ? StreamLanguage.define(parser) : [];
 }
 
-export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoReferences, onJumpBack, onHelp, theme = 'one-dark' }) {
+export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoReferences, onJumpBack, onJumpForward, onFocusTree, onOpenFile, onExComplete, onHelp, theme = 'one-dark' }) {
   const host = document.getElementById('editor-host');
   const mount = document.getElementById('editor');
   const quickpick = document.getElementById('quickpick');
@@ -115,12 +115,93 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   Vim.mapCommand('gr', 'action', 'readerGotoReferences', undefined, { context: 'normal' });
   Vim.defineAction('readerAskLine', () => onAsk());
   Vim.mapCommand('\\c', 'action', 'readerAskLine', undefined, { context: 'normal' });
+  Vim.defineAction('readerFocusTree', () => {
+    if (typeof onFocusTree === 'function') onFocusTree();
+  });
+  Vim.mapCommand('\\e', 'action', 'readerFocusTree', undefined, { context: 'normal' });
+
+  // Ctrl-o / Ctrl-i：优先走应用级跳转栈（跨文件 gd/gr 有效）；栈空时回退到
+  // codemirror-vim 自带的 jumplist（G/gg/搜索等 vim 动作）。
+  function runVimJump(key, actionName) {
+    const cm = view ? getCM(view) : null;
+    if (!cm) return;
+    Vim.unmap(key, 'normal');
+    try {
+      Vim.handleKey(cm, key, 'normal');
+    } finally {
+      Vim.mapCommand(key, 'action', actionName, undefined, { context: 'normal' });
+    }
+  }
+  Vim.defineAction('readerJumpBack', () => {
+    const handled = typeof onJumpBack === 'function' && onJumpBack();
+    if (!handled) runVimJump('<C-o>', 'readerJumpBack');
+  });
+  Vim.mapCommand('<C-o>', 'action', 'readerJumpBack', undefined, { context: 'normal' });
+  Vim.defineAction('readerJumpForward', () => {
+    const handled = typeof onJumpForward === 'function' && onJumpForward();
+    if (!handled) runVimJump('<C-i>', 'readerJumpForward');
+  });
+  Vim.mapCommand('<C-i>', 'action', 'readerJumpForward', undefined, { context: 'normal' });
+
   Vim.defineEx('ask', 'ask', () => onAsk());
   Vim.defineEx('gd', 'gd', () => onGotoDefinition());
   Vim.defineEx('gr', 'gr', () => onGotoReferences());
   Vim.defineEx('help', 'h', () => {
     if (typeof onHelp === 'function') onHelp();
   });
+  const openExFile = (params) => {
+    const target = String(params?.argString || '').trim();
+    if (!target || typeof onOpenFile !== 'function') return;
+    onOpenFile(target);
+  };
+  Vim.defineEx('e', 'e', (cm, params) => openExFile(params));
+  Vim.defineEx('edit', 'edit', (cm, params) => openExFile(params));
+  Vim.defineEx('vi', 'vi', (cm, params) => openExFile(params));
+  Vim.defineEx('vsplit', 'vs', (cm, params) => openExFile(params));
+  Vim.defineEx('tree', 'tree', () => {
+    if (typeof onFocusTree === 'function') onFocusTree();
+  });
+
+  const EX_COMMAND_NAMES = [
+    'ask', 'colorscheme', 'e', 'edit', 'gd', 'gr', 'help', 'map', 'nmap', 'norm',
+    'q', 'qa', 'set', 'sort', 'tree', 'vi', 'vmap', 'vsplit', 'w', 'wq',
+  ];
+  const FILE_EX_COMMANDS = new Set(['e', 'edit', 'vi', 'vsplit']);
+  function exCompletions(value) {
+    const text = String(value || '').replace(/^:/, '');
+    const space = text.search(/\s/);
+    if (space === -1) {
+      return EX_COMMAND_NAMES
+        .filter((name) => name.startsWith(text))
+        .sort()
+        .map((name) => `${name} `);
+    }
+    const command = text.slice(0, space);
+    if (!FILE_EX_COMMANDS.has(command) || typeof onExComplete !== 'function') return [];
+    const argument = text.slice(space + 1);
+    return onExComplete(argument).map((filePath) => `${command} ${filePath}`);
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement)) return;
+    const panel = input.closest('.cm-vim-panel');
+    if (!panel || !panel.textContent.startsWith(':')) return;
+    const candidates = exCompletions(input.value);
+    if (!candidates.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    let cycle = input.__crExCompletion;
+    if (!cycle || cycle.value !== input.value) {
+      cycle = { value: input.value, index: 0, items: candidates };
+      input.__crExCompletion = cycle;
+    }
+    const next = cycle.items[cycle.index % cycle.items.length];
+    cycle.index += 1;
+    cycle.value = next;
+    input.value = next;
+    input.setSelectionRange(next.length, next.length);
+  }, true);
 
   const appKeymap = Prec.highest(keymap.of([
     {

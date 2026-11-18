@@ -121,6 +121,10 @@ input:disabled { opacity: .45; }
 }
 .tree-row:hover { background: #1c2633; color: #edf4fc; }
 .tree-row.active { background: #1d3854; color: #8fc0ff; }
+.tree-row.key-focus { outline: 1px solid var(--accent); outline-offset: -1px; background: #1d3854; color: #8fc0ff; }
+.file-tree:focus { outline: none; }
+.tree-row-flat { padding-left: 6px; }
+.tree-row-flat .tree-name { font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; }
 .tree-row.directory { color: #d2d9e2; }
 .tree-arrow { display: inline-block; width: 15px; color: #738298; font-size: 10px; }
 .tree-file-mark { width: 15px; color: #60738d; font-size: 10px; }
@@ -427,10 +431,10 @@ input[readonly] { color: #8391a4; background: #111821; }
 .history-menu {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
+  left: 0;
   z-index: 60;
   width: 330px;
-  max-height: 380px;
+  max-height: min(380px, calc(100vh - 90px));
   overflow: auto;
   border: 1px solid #3f5874;
   border-radius: 8px;

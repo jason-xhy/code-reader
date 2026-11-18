@@ -8,6 +8,7 @@ import { AppError } from './src/errors.js';
 import {
   checkoutBranch,
   commitDetails,
+  functionHistory,
   lineHistory,
   listBranches,
   listCodeReaderStashes,
@@ -227,7 +228,7 @@ async function handleApi(request, response, url) {
     return;
   }
 
-  const match = url.pathname.match(/^\/api\/repositories\/([^/]+)\/(tree|meta|file|line-history|commit|explain)$/);
+  const match = url.pathname.match(/^\/api\/repositories\/([^/]+)\/(tree|meta|file|line-history|function-history|commit|explain)$/);
   if (!match) throw new AppError('API 不存在', 404, 'NOT_FOUND');
   const repository = getRepository(decodeURIComponent(match[1]));
   const action = match[2];
@@ -250,6 +251,12 @@ async function handleApi(request, response, url) {
     const filePath = url.searchParams.get('path') || '';
     const line = integerParam(url.searchParams.get('line'));
     sendJson(response, 200, { path: filePath, line, commits: await lineHistory(repository.root, filePath, line) });
+    return;
+  }
+  if (action === 'function-history' && request.method === 'GET') {
+    const filePath = url.searchParams.get('path') || '';
+    const line = integerParam(url.searchParams.get('line'));
+    sendJson(response, 200, await functionHistory(repository.root, filePath, line));
     return;
   }
   if (action === 'commit' && request.method === 'GET') {

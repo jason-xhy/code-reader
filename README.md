@@ -8,12 +8,13 @@
 
 - 打开本地或远程 Git 仓库，浏览文件树、分支、Tag 和 Git 状态
 - CodeMirror 6 编辑器，支持 Vim 模式（宏、寄存器、marks、`:s`、`:g`、`:norm` 等）
-- `Ctrl-o` 跳回上一个跳转位置，`Ctrl-i` 跳到较新的跳转位置
-- LSP 跳转定义 / 查找引用；跳转栈
+- `Ctrl-o` 跳回上一个跳转位置，`Ctrl-i` 跳到较新的跳转位置（跨文件的应用级跳转栈，gd/gr 后可直接回退）
+- LSP 跳转定义 / 查找引用；LSP 不可用或无结果时，定义跳转自动回退到 Git 文本检索；跳转栈
+- `\e` 聚焦文件树（`j`/`k` 选择、`Enter` 打开、`q` 返回），`:e` / `:vi` 按路径打开文件并支持 `Tab` 补全
 - LLM 解释当前行：支持 OpenAI 和 Anthropic Messages 协议
 - LLM Key 存放在系统钥匙串（macOS Keychain / Linux Secret Service），不落盘
-- 本地文档知识库（Markdown / reStructuredText / 文本 / HTML / PDF），可选联网检索
-- 行历史（`git blame`）、提交详情与 diff
+- 本地文档知识库（Markdown / reStructuredText / 文本 / HTML / PDF，长文档均匀采样），检索时结合文件路径与当前行上下文，可选联网检索
+- 函数级历史（按函数范围 `git blame` 取最近 5 条提交，服务端按 HEAD+函数范围缓存）、提交详情与 diff
 - 解释结果自动记录为 FAQ，按函数/代码段命中
 - 8 套 Vim 配色主题，三栏宽度可拖拽
 
