@@ -30,11 +30,13 @@
         <div class="empty-tree">打开一个本地或远程 Git 仓库</div>
       </nav>
       <div class="sidebar-footer">
-        <span id="file-count">0 个文件</span>
+        <div class="footer-status">
+          <span id="file-count">0 个文件</span>
+          <button id="llm-status" class="llm-settings-button" type="button" title="配置模型与 API Key">LLM 设置</button>
+        </div>
         <div class="footer-actions">
           <button id="editor-env-settings" class="llm-settings-button" type="button" title="关联本地 vim/neovim 环境">编辑器环境</button>
           <button id="docs-settings" class="llm-settings-button" type="button" title="配置规范与文档目录">知识库</button>
-          <button id="llm-status" class="llm-settings-button" type="button" title="配置模型与 API Key">LLM 设置</button>
         </div>
       </div>
     </aside>
@@ -81,7 +83,7 @@
         <div id="code-empty" class="code-empty">
           <div class="empty-mark">&lt;/&gt;</div>
           <h1>从代码树选择一个文件</h1>
-          <p>光标移动即可查看当前函数的提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用，<kbd>Ctrl-o</kbd> 跳回，<kbd>\e</kbd> 聚焦文件树，<kbd>\c</kbd> 就当前行提问。</p>
+          <p>光标移动即可查看当前函数的提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用（列表选中项显示前后 10 行与 Caller），<kbd>Ctrl-o</kbd> 跳回，<kbd>\e</kbd> 聚焦文件树，<kbd>\c</kbd> 就当前行提问。</p>
           <p>编辑器为完整 Vim 模式（<kbd>i</kbd>/<kbd>Esc</kbd> 切换，<kbd>/</kbd> 搜索，<kbd>u</kbd> 撤销，<kbd>:help</kbd> 查看全部快捷键）；修改仅保存在内存，不会写回磁盘。</p>
         </div>
         <div id="editor-host" class="editor-host" tabindex="0" hidden>
@@ -90,7 +92,7 @@
           <div class="statusbar">
             <span id="vim-mode" class="vim-mode">--NORMAL--</span>
             <span id="cursor-pos" class="cursor-pos">1:1</span>
-            <span id="editor-note" class="editor-note">Vim 模式 · gd 跳定义 · gr 跳引用 · Ctrl-o 跳回 · \c 提问 · :help 快捷键 · 修改仅内存</span>
+            <span id="editor-note" class="editor-note">Vim 模式 · gd 跳定义 · gr 引用预览 · Ctrl-o 跳回 · \c 提问 · :help 快捷键 · 修改仅内存</span>
             <span id="lsp-state" class="lsp-state">LSP 未检测</span>
           </div>
         </div>
@@ -117,6 +119,10 @@
             <button id="nvim-close" class="button small" type="button" title="关闭 nvim 面板">关闭</button>
           </div>
           <div id="nvim-term" class="nvim-term"></div>
+          <div class="statusbar nvim-statusbar">
+            <span id="nvim-note" class="editor-note">正在读取本地 vim/neovim 配置…</span>
+            <button id="nvim-keys" class="statusbar-button" type="button" title="查看本地配置中实际生效的按键映射">本地快捷键</button>
+          </div>
         </div>
       </section>
     </main>
@@ -303,6 +309,17 @@
         <button id="editor-env-save" class="button primary" type="button">保存</button>
       </div>
     </div>
+  </dialog>
+
+  <dialog id="nvim-keymap-dialog" class="open-dialog nvim-keymap-dialog">
+    <div class="dialog-heading">
+      <div>
+        <h2>本地快捷键</h2>
+        <p id="nvim-keymap-subtitle">来自本地 vim/neovim 配置实际生效的映射。</p>
+      </div>
+      <button id="nvim-keymap-close" class="icon-button" type="button" aria-label="关闭">×</button>
+    </div>
+    <div id="nvim-keymap-body" class="nvim-keymap-body"></div>
   </dialog>
 
   <dialog id="vim-help-dialog" class="open-dialog vim-help-dialog">

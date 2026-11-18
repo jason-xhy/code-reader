@@ -15,6 +15,7 @@ import {
   popCodeReaderStash,
   readSource,
   runGit,
+  sourceContext,
   syncRepository,
 } from './src/git.js';
 import { explainSource, llmStatus, saveLlmConfig } from './src/llm.js';
@@ -26,6 +27,7 @@ import { docsStats, getDocsConfig, invalidateDocsIndex, saveDocsConfig } from '.
 import { deleteFaq, detectSegment, findFaq, recordFaq } from './src/faq.js';
 import { attachNvim } from './src/nvim.js';
 import { editorStatus, initEditorEnv, saveEditorConfig } from './src/editor-env.js';
+import { editorProfile } from './src/editor-profile.js';
 
 const publicRoot = fileURLToPath(new URL('./public/', import.meta.url));
 const port = Number.parseInt(process.env.PORT || '8765', 10);
@@ -88,6 +90,10 @@ function characterParam(value) {
 async function handleApi(request, response, url) {
   if (url.pathname === '/api/editor' && request.method === 'GET') {
     sendJson(response, 200, await editorStatus());
+    return;
+  }
+  if (url.pathname === '/api/editor/profile' && request.method === 'GET') {
+    sendJson(response, 200, await editorProfile({ force: url.searchParams.get('refresh') === '1' }));
     return;
   }
   if (url.pathname === '/api/editor' && request.method === 'POST') {
@@ -239,7 +245,7 @@ async function handleApi(request, response, url) {
     return;
   }
 
-  const match = url.pathname.match(/^\/api\/repositories\/([^/]+)\/(tree|meta|file|line-history|function-history|commit|explain)$/);
+  const match = url.pathname.match(/^\/api\/repositories\/([^/]+)\/(tree|meta|file|context|line-history|function-history|commit|explain)$/);
   if (!match) throw new AppError('API 不存在', 404, 'NOT_FOUND');
   const repository = getRepository(decodeURIComponent(match[1]));
   const action = match[2];
@@ -259,6 +265,13 @@ async function handleApi(request, response, url) {
     const data = await readSource(repository.root, filePath);
     lspPrewarm(repository, { path: filePath, content: data.content });
     sendJson(response, 200, data);
+    return;
+  }
+  if (action === 'context' && request.method === 'GET') {
+    const filePath = url.searchParams.get('path') || '';
+    const line = integerParam(url.searchParams.get('line'));
+    const radius = Number.parseInt(url.searchParams.get('radius') || '10', 10);
+    sendJson(response, 200, await sourceContext(repository.root, filePath, line, radius));
     return;
   }
   if (action === 'line-history' && request.method === 'GET') {

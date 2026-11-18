@@ -2,7 +2,10 @@
 // grill: 成品检索=skill 库无 code-reader CM6 编辑器成品; 输入固定=固定 createEditor 选项与 DOM id; 步骤机械=构建 extensions/绑定 vim; 判读固定=CM6 state 与 vim 事件; 失效场景=构造不出（仅本应用）
 import { Compartment, EditorState, Prec } from '@codemirror/state';
 import {
+  Decoration,
   EditorView,
+  ViewPlugin,
+  WidgetType,
   keymap,
   lineNumbers,
   highlightActiveLine,
@@ -19,11 +22,13 @@ import {
   bracketMatching,
   defaultHighlightStyle,
   indentOnInput,
+  indentUnit,
   StreamLanguage,
   syntaxHighlighting,
 } from '@codemirror/language';
 import { getCM, Vim, vim } from '@replit/codemirror-vim';
-import { THEMES, themeById, themeExtension } from './themes.js';
+import { tags } from '@lezer/highlight';
+import { THEMES, themeById, themeExtensionFor, profileTheme, C_TOKEN_TAGS } from './themes.js';
 export { THEMES } from './themes.js';
 import { cpp, java } from '@codemirror/legacy-modes/mode/clike';
 import { javascript, json, typescript } from '@codemirror/legacy-modes/mode/javascript';
@@ -46,14 +51,75 @@ import { toml } from '@codemirror/legacy-modes/mode/toml';
 // 让 @replit/codemirror-vim 的 <C-i> -> jumpListWalk(forward) 生效。
 const DEFAULT_KEYMAP_WITHOUT_CTRL_I = defaultKeymap.filter((binding) => binding.key !== 'Mod-i');
 
+// C/C++ 的 legacy 模式只输出 keyword/type/variable 粗粒度 token，而本地 nvim
+// 走 treesitter：struct/return/const、函数调用、成员访问、全大写宏颜色各不相同。
+// 在 legacy token 之上做一层词法细化，并用 tokenTable 映射到独立 tag。
+const C_TYPE_KEYWORDS = new Set(['struct', 'union', 'enum', 'typedef']);
+const C_QUALIFIERS = new Set(['const', 'volatile', 'restrict']);
+const C_STORAGE = new Set(['static', 'extern', 'register', 'auto', 'inline', 'asm', 'fortran', 'thread_local']);
+const C_CONTROL = new Set(['if', 'else', 'switch', 'case', 'default', 'for', 'while', 'do', 'break', 'continue', 'goto']);
+const C_OPERATOR_KEYWORDS = new Set(['sizeof', 'alignof', 'offsetof', '_Alignof']);
+const C_BASIC_TYPES = new Set(['int', 'long', 'char', 'short', 'double', 'float', 'unsigned', 'signed', 'void', 'bool', '_Bool', '_Complex']);
+const C_TYPE_POSITIONS = new Set([null, ';', '{', '}', '(', ',', 'comment', 'keywordType', 'keywordStorage', 'typeNameToken', 'builtinType']);
+
+const C_TOKEN_TABLE = {
+  keywordReturn: C_TOKEN_TAGS.keywordReturn,
+  keywordType: C_TOKEN_TAGS.keywordType,
+  keywordStorage: C_TOKEN_TAGS.keywordStorage,
+  keywordControl: tags.controlKeyword,
+  keywordOperator: tags.operatorKeyword,
+  constantName: C_TOKEN_TAGS.constantName,
+  callName: C_TOKEN_TAGS.callName,
+  memberName: C_TOKEN_TAGS.memberName,
+  typeNameToken: C_TOKEN_TAGS.typeNameToken,
+  builtinType: C_TOKEN_TAGS.builtinType,
+};
+
+function refineC(parser) {
+  return {
+    ...parser,
+    tokenTable: C_TOKEN_TABLE,
+    token(stream, state) {
+      const previous = state.crPrevious;
+      const style = parser.token(stream, state);
+      let refined = style;
+      if (style === 'keyword') {
+        const word = stream.current();
+        if (word === 'return') refined = 'keywordReturn';
+        else if (C_TYPE_KEYWORDS.has(word) || C_QUALIFIERS.has(word)) refined = 'keywordType';
+        else if (C_STORAGE.has(word)) refined = 'keywordStorage';
+        else if (C_CONTROL.has(word)) refined = 'keywordControl';
+        else if (C_OPERATOR_KEYWORDS.has(word)) refined = 'keywordOperator';
+      } else if (style === 'type') {
+        refined = C_BASIC_TYPES.has(stream.current()) ? 'builtinType' : 'typeNameToken';
+      } else if (style === 'def') {
+        // struct/typedef 后面的名字也会被 legacy 模式判成 def；只有后接
+        // '(' 的才是函数定义，其余按类型名处理。
+        refined = stream.match(/^\s*\(/, false) ? 'callName' : 'typeNameToken';
+      } else if (style === 'variable') {
+        const word = stream.current();
+        const before = (stream.string || '').slice(0, stream.start);
+        if (/(?:\.|->)\s*$/.test(before)) refined = 'memberName';
+        else if (stream.match(/^\s*\(/, false)) refined = 'callName';
+        else if (/^[A-Z][A-Z0-9_]*$/.test(word)) refined = 'constantName';
+        else if ((previous === undefined || C_TYPE_POSITIONS.has(previous)) && stream.match(/^\s*(?:\*|[A-Za-z_])/, false)) refined = 'typeNameToken';
+      }
+      state.crPrevious = refined;
+      return refined;
+    },
+  };
+}
+
+const C_PARSER = refineC(cpp);
+
 const MODES_BY_EXTENSION = new Map(Object.entries({
-  c: cpp,
-  h: cpp,
-  cc: cpp,
-  cpp: cpp,
-  cxx: cpp,
-  hpp: cpp,
-  s: cpp,
+  c: C_PARSER,
+  h: C_PARSER,
+  cc: C_PARSER,
+  cpp: C_PARSER,
+  cxx: C_PARSER,
+  hpp: C_PARSER,
+  s: C_PARSER,
   java: java,
   py: python,
   js: javascript,
@@ -89,7 +155,94 @@ function languageFor(filePath) {
   return parser ? StreamLanguage.define(parser) : [];
 }
 
-export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoReferences, onJumpBack, onJumpForward, onFocusTree, onOpenFile, onExComplete, onHelp, theme = 'one-dark' }) {
+class WhitespaceWidget extends WidgetType {
+  constructor(text, className) {
+    super();
+    this.text = text;
+    this.className = className;
+  }
+
+  eq(other) {
+    return other.text === this.text && other.className === this.className;
+  }
+
+  toDOM() {
+    const element = document.createElement('span');
+    element.className = `cm-ws-mark ${this.className}`;
+    element.textContent = this.text;
+    return element;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+}
+
+function listChars(value) {
+  const result = {};
+  for (const part of String(value || '').split(',')) {
+    const index = part.indexOf(':');
+    if (index <= 0) continue;
+    const key = part.slice(0, index).trim();
+    const character = part.slice(index + 1).trim().charAt(0);
+    if (character) result[key] = character;
+  }
+  return result;
+}
+
+// 按本地 list/listchars 显示 tab、尾随空格与不换行空格（对应 nvim 的 » / · / ␣）。
+function whitespaceExtension(options) {
+  if (!options?.list) return [];
+  const chars = listChars(options.listchars);
+  if (!chars.tab && !chars.trail && !chars.nbsp) return [];
+  const build = (view) => {
+    const widgets = [];
+    const doc = view.state.doc;
+    for (const range of view.visibleRanges) {
+      let position = range.from;
+      while (position <= range.to && widgets.length < 4000) {
+        const line = doc.lineAt(position);
+        const text = line.text;
+        const special = /\t|\u00a0/g;
+        let match;
+        while ((match = special.exec(text)) && widgets.length < 4000) {
+          const character = match[0];
+          const absolute = line.from + match.index;
+          if (character === '\t' && chars.tab) {
+            widgets.push(Decoration.widget({ widget: new WhitespaceWidget(chars.tab, 'cm-ws-tab'), side: -1 }).range(absolute));
+          } else if (character === '\u00a0' && chars.nbsp) {
+            widgets.push(Decoration.widget({ widget: new WhitespaceWidget(chars.nbsp, 'cm-ws-nbsp'), side: -1 }).range(absolute));
+          }
+        }
+        if (chars.trail) {
+          const match = /[ ]+$/.exec(text);
+          if (match) {
+            const start = line.from + match.index;
+            for (let index = 0; index < match[0].length && widgets.length < 4000; index += 1) {
+              widgets.push(Decoration.widget({ widget: new WhitespaceWidget(chars.trail, 'cm-ws-trail'), side: -1 }).range(start + index));
+            }
+          }
+        }
+        if (line.to >= doc.length) break;
+        position = line.to + 1;
+      }
+      if (widgets.length >= 4000) break;
+    }
+    return Decoration.set(widgets, true);
+  };
+  const plugin = ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.decorations = build(view);
+    }
+
+    update(update) {
+      if (update.docChanged || update.viewportChanged) this.decorations = build(update.view);
+    }
+  }, { decorations: (value) => value.decorations });
+  return [plugin];
+}
+
+export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoReferences, onJumpBack, onJumpForward, onFocusTree, onOpenFile, onExComplete, onHelp, theme = 'one-dark', profile = null }) {
   const host = document.getElementById('editor-host');
   const mount = document.getElementById('editor');
   const quickpick = document.getElementById('quickpick');
@@ -97,7 +250,40 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   const cursorPosElement = document.getElementById('cursor-pos');
   const languageCompartment = new Compartment();
   const themeCompartment = new Compartment();
-  let currentTheme = themeById(theme).id;
+  const displayCompartment = new Compartment();
+  let currentTheme = theme === 'local' ? 'local' : themeById(theme).id;
+  let currentProfile = profile?.available ? profile : null;
+
+  function paletteFor(id) {
+    if (id === 'local') return currentProfile ? profileTheme(currentProfile) : themeById(THEMES[0].id);
+    return themeById(id);
+  }
+
+  function themeExtensionsFor(id) {
+    return themeExtensionFor(paletteFor(id));
+  }
+
+  function displayExtensions() {
+    if (!currentProfile) {
+      return [lineNumbers(), highlightActiveLineGutter(), highlightActiveLine()];
+    }
+    const options = currentProfile.options || {};
+    const tabstop = Number.isInteger(options.tabstop) ? Math.min(Math.max(options.tabstop, 1), 16) : 4;
+    const shiftwidth = Number.isInteger(options.shiftwidth) ? Math.max(options.shiftwidth, 1) : tabstop;
+    const extensions = [
+      EditorState.tabSize.of(tabstop),
+      indentUnit.of(options.expandtab ? ' '.repeat(shiftwidth) : '\t'),
+      EditorView.theme({ '.cm-content': { tabSize: String(tabstop) } }),
+    ];
+    if (options.number !== false) {
+      extensions.push(lineNumbers());
+      if (options.cursorline) extensions.push(highlightActiveLineGutter());
+    }
+    if (options.cursorline) extensions.push(highlightActiveLine());
+    if (options.wrap) extensions.push(EditorView.lineWrapping);
+    extensions.push(...whitespaceExtension(options));
+    return extensions;
+  }
 
   const state = {
     loaded: false,
@@ -105,6 +291,10 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     quickpickItems: null,
     quickpickIndex: 0,
     quickpickOnPick: null,
+    quickpickTitle: '',
+    quickpickPreviewLoader: null,
+    quickpickPreview: null,
+    quickpickPreviewToken: 0,
   };
   let cursorTimer = null;
   let view = null;
@@ -269,8 +459,6 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
 
   function extensionsFor(filePath) {
     return [
-      lineNumbers(),
-      highlightActiveLineGutter(),
       highlightSpecialChars(),
       history(),
       drawSelection(),
@@ -281,10 +469,10 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
       bracketMatching(),
       rectangularSelection(),
       crosshairCursor(),
-      highlightActiveLine(),
       highlightSelectionMatches(),
       languageCompartment.of(languageFor(filePath)),
-      themeCompartment.of(themeExtension(currentTheme)),
+      themeCompartment.of(themeExtensionsFor(currentTheme)),
+      displayCompartment.of(displayExtensions()),
       appKeymap,
       keymap.of([...DEFAULT_KEYMAP_WITHOUT_CTRL_I, ...searchKeymap, ...historyKeymap, indentWithTab]),
       vim(),
@@ -357,8 +545,11 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     quickpick.replaceChildren();
     const heading = document.createElement('div');
     heading.className = 'quickpick-heading';
-    heading.textContent = `${items.length} 个跳转目标 · ↑↓ 选择 · Enter 跳转 · Esc 取消`;
+    heading.textContent = state.quickpickTitle
+      || `${items.length} 个跳转目标 · ↑↓ 选择 · Enter 跳转 · Esc 取消`;
     quickpick.append(heading);
+    const body = document.createElement('div');
+    body.className = 'quickpick-body';
     const list = document.createElement('div');
     list.className = 'quickpick-list';
     items.forEach((item, index) => {
@@ -373,21 +564,125 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
       target.textContent = `${item.path}:${item.line}:${item.character + 1}`;
       row.append(indexElement, target);
       row.addEventListener('click', () => pickQuickpick(index));
-      row.addEventListener('mouseenter', () => {
-        state.quickpickIndex = index;
-        renderQuickpick();
-      });
+      row.addEventListener('mouseenter', () => setQuickpickIndex(index));
       list.append(row);
     });
-    quickpick.append(list);
+    body.append(list);
+    if (state.quickpickPreviewLoader) {
+      const preview = document.createElement('div');
+      preview.className = 'quickpick-preview';
+      renderQuickpickPreview(preview);
+      body.append(preview);
+    }
+    quickpick.append(body);
   }
 
-  function showQuickpick(items, onPick) {
+  // 引用预览的另一窗口：显示选中引用前后 10 行，并标出所在函数（Caller）。
+  function renderQuickpickPreview(container) {
+    const preview = state.quickpickPreview;
+    if (!preview || preview.status === 'loading') {
+      container.textContent = '正在读取引用上下文…';
+      return;
+    }
+    if (preview.status === 'error') {
+      const error = document.createElement('div');
+      error.className = 'quickpick-preview-error';
+      error.textContent = preview.message || '上下文读取失败';
+      container.append(error);
+      return;
+    }
+    const data = preview.data;
+    if (!data) {
+      container.textContent = '没有可显示的上下文';
+      return;
+    }
+    const head = document.createElement('div');
+    head.className = 'quickpick-preview-head';
+    const title = document.createElement('div');
+    title.className = 'quickpick-preview-title';
+    title.textContent = `${data.path}:${data.line}`;
+    const caller = document.createElement('div');
+    caller.className = 'quickpick-preview-caller';
+    caller.textContent = data.caller
+      ? `Caller: ${data.caller}${data.callerStart ? ` · 函数 ${data.callerStart}-${data.callerEnd}` : ''}`
+      : 'Caller: （当前行不在可识别的函数内）';
+    head.append(title, caller);
+    const code = document.createElement('div');
+    code.className = 'quickpick-preview-code';
+    const width = String(data.lineEnd || data.line || 1).length;
+    for (const row of data.lines || []) {
+      const lineElement = document.createElement('div');
+      lineElement.className = `quickpick-preview-line${row.number === data.line ? ' target' : ''}`;
+      const number = document.createElement('span');
+      number.className = 'quickpick-preview-number';
+      number.textContent = String(row.number).padStart(width, ' ');
+      const text = document.createElement('span');
+      text.className = 'quickpick-preview-text';
+      text.textContent = row.text === '' ? ' ' : row.text;
+      lineElement.append(number, text);
+      code.append(lineElement);
+    }
+    container.append(head, code);
+  }
+
+  function updateQuickpickSelection() {
+    const rows = quickpick.querySelectorAll('.quickpick-row');
+    rows.forEach((row, index) => row.classList.toggle('active', index === state.quickpickIndex));
+    rows[state.quickpickIndex]?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function updateQuickpickPreview() {
+    const preview = quickpick.querySelector('.quickpick-preview');
+    if (!preview) return;
+    preview.replaceChildren();
+    renderQuickpickPreview(preview);
+  }
+
+  function loadQuickpickPreview(index) {
+    const loader = state.quickpickPreviewLoader;
+    const items = state.quickpickItems || [];
+    const item = items[index];
+    if (!loader || !item) return;
+    const token = ++state.quickpickPreviewToken;
+    state.quickpickPreview = { status: 'loading', item };
+    updateQuickpickPreview();
+    Promise.resolve()
+      .then(() => loader(item))
+      .then((data) => {
+        if (token !== state.quickpickPreviewToken || !state.quickpickItems) return;
+        state.quickpickPreview = { status: 'done', item, data };
+        updateQuickpickPreview();
+      })
+      .catch((error) => {
+        if (token !== state.quickpickPreviewToken || !state.quickpickItems) return;
+        state.quickpickPreview = { status: 'error', item, message: error.message };
+        updateQuickpickPreview();
+      });
+  }
+
+  function setQuickpickIndex(index) {
+    const items = state.quickpickItems;
+    if (!items || !items.length) return;
+    state.quickpickIndex = ((index % items.length) + items.length) % items.length;
+    updateQuickpickSelection();
+    if (state.quickpickPreviewLoader) loadQuickpickPreview(state.quickpickIndex);
+    quickpick.focus();
+  }
+
+  function showQuickpick(items, onPick, options = {}) {
     state.quickpickItems = items;
     state.quickpickIndex = 0;
     state.quickpickOnPick = onPick;
+    state.quickpickTitle = options.title || '';
+    state.quickpickPreviewLoader = typeof options.preview === 'function' ? options.preview : null;
+    state.quickpickPreview = null;
+    state.quickpickPreviewToken += 1;
+    quickpick.classList.toggle('has-preview', Boolean(state.quickpickPreviewLoader));
     renderQuickpick();
     quickpick.hidden = false;
+    quickpick.tabIndex = -1;
+    quickpick.focus();
+    if (state.quickpickPreviewLoader) loadQuickpickPreview(0);
   }
 
   function pickQuickpick(index) {
@@ -401,27 +696,32 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   function closeQuickpick() {
     state.quickpickItems = null;
     state.quickpickOnPick = null;
+    state.quickpickTitle = '';
+    state.quickpickPreviewLoader = null;
+    state.quickpickPreview = null;
+    state.quickpickPreviewToken += 1;
     quickpick.hidden = true;
+    quickpick.classList.remove('has-preview');
+    quickpick.replaceChildren();
     focus();
   }
 
   function quickpickKeydown(event) {
     const items = state.quickpickItems;
     if (!items) return false;
+    if (event.defaultPrevented) return true;
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
       closeQuickpick();
-    } else if (event.key === 'ArrowDown' || (event.ctrlKey && event.key === 'j')) {
+    } else if (event.key === 'ArrowDown' || (event.ctrlKey && event.key === 'j') || event.key === 'j') {
       event.preventDefault();
       event.stopPropagation();
-      state.quickpickIndex = (state.quickpickIndex + 1) % items.length;
-      renderQuickpick();
-    } else if (event.key === 'ArrowUp' || (event.ctrlKey && event.key === 'k')) {
+      setQuickpickIndex(state.quickpickIndex + 1);
+    } else if (event.key === 'ArrowUp' || (event.ctrlKey && event.key === 'k') || event.key === 'k') {
       event.preventDefault();
       event.stopPropagation();
-      state.quickpickIndex = (state.quickpickIndex - 1 + items.length) % items.length;
-      renderQuickpick();
+      setQuickpickIndex(state.quickpickIndex - 1);
     } else if (event.key === 'Enter') {
       event.preventDefault();
       event.stopPropagation();
@@ -463,10 +763,21 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   }
 
   function setTheme(id) {
-    const palette = themeById(id);
-    currentTheme = palette.id;
-    view.dispatch({ effects: themeCompartment.reconfigure(themeExtension(currentTheme)) });
+    currentTheme = id === 'local' ? 'local' : themeById(id).id;
+    const palette = paletteFor(currentTheme);
+    view.dispatch({ effects: themeCompartment.reconfigure(themeExtensionsFor(currentTheme)) });
     return palette;
+  }
+
+  // 本地 vim/neovim 配置到达后：同步主题（本地 colorscheme）、tab 宽度、缩进、
+  // 行号、cursorline、wrap 与 listchars 显示。
+  function setProfile(next) {
+    currentProfile = next?.available ? next : null;
+    view.dispatch({ effects: displayCompartment.reconfigure(displayExtensions()) });
+    if (currentTheme === 'local') {
+      view.dispatch({ effects: themeCompartment.reconfigure(themeExtensionsFor(currentTheme)) });
+    }
+    return paletteFor(currentTheme);
   }
 
   updateVimMode();
@@ -482,6 +793,7 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     hide,
     focus,
     setTheme,
+    setProfile,
     snapshot,
     themes: THEMES,
   };

@@ -3,7 +3,9 @@
 import { createEditor, THEMES } from './editor.js';
 
 const $ = (selector) => document.querySelector(selector);
-const THEME_KEY = 'code-reader-theme';
+// v2：本地主题成为默认选项后重置旧版本保存的配色选择，避免历史
+// localStorage（多为早期 one-dark）压过「默认本地」。用户重新选择后照常持久化。
+const THEME_KEY = 'code-reader-theme-v2';
 const LAYOUT_KEY = 'code-reader-layout';
 
 const elements = {
@@ -75,6 +77,12 @@ const elements = {
   tabNvim: $('#tab-nvim'),
   nvimHost: $('#nvim-host'),
   nvimStatus: $('#nvim-status'),
+  nvimNote: $('#nvim-note'),
+  nvimKeys: $('#nvim-keys'),
+  nvimKeymapDialog: $('#nvim-keymap-dialog'),
+  nvimKeymapBody: $('#nvim-keymap-body'),
+  nvimKeymapSubtitle: $('#nvim-keymap-subtitle'),
+  nvimKeymapClose: $('#nvim-keymap-close'),
   nvimOpenCurrent: $('#nvim-open-current'),
   nvimRestart: $('#nvim-restart'),
   nvimClose: $('#nvim-close'),
@@ -140,12 +148,17 @@ const state = {
   dirBrowserPath: '',
   layout: { sidebar: 252, insights: 372, collapsed: false },
   theme: 'one-dark',
+  themeExplicit: false,
   editorMode: 'editor',
   editorEnv: null,
+  editorProfile: null,
 };
 
 const savedTheme = localStorage.getItem(THEME_KEY);
-if (savedTheme && THEMES.some((theme) => theme.id === savedTheme)) state.theme = savedTheme;
+if (savedTheme && (savedTheme === 'local' || THEMES.some((theme) => theme.id === savedTheme))) {
+  state.theme = savedTheme;
+  state.themeExplicit = true;
+}
 
 const jumpStack = [];
 const jumpForwardStack = [];
@@ -253,8 +266,36 @@ function applyShellTheme(palette) {
   document.body.style.color = palette.shell.text;
 }
 
+// 字体同步：配色由本地 nvim 高亮生成后，字体也要跟本地终端一致。CM6 主题
+// 通过 CSS 变量读取这里的值，nvim 面板由 terminal.js 单独应用 profile.font。
+function applyEditorFont(font) {
+  const root = document.documentElement.style;
+  const family = typeof font?.family === 'string' ? font.family.replace(/["']/g, ' ').trim() : '';
+  const size = Number(font?.sizePx);
+  if (!family) {
+    root.removeProperty('--cr-editor-font');
+    root.removeProperty('--cr-editor-font-size');
+    root.removeProperty('--cr-editor-line-height');
+    return;
+  }
+  root.setProperty('--cr-editor-font', `"${family}", "SFMono-Regular", Consolas, "Liberation Mono", monospace`);
+  if (Number.isFinite(size) && size >= 9 && size <= 28) {
+    root.setProperty('--cr-editor-font-size', `${Math.round(size)}px`);
+    root.setProperty('--cr-editor-line-height', `${Math.round(size * 1.6)}px`);
+  } else {
+    root.removeProperty('--cr-editor-font-size');
+    root.removeProperty('--cr-editor-line-height');
+  }
+}
+
 function populateThemes() {
   elements.themeSelect.replaceChildren();
+  if (state.editorProfile?.available) {
+    const option = document.createElement('option');
+    option.value = 'local';
+    option.textContent = `本地 · ${state.editorProfile.colorscheme || 'vim/neovim'}`;
+    elements.themeSelect.append(option);
+  }
   for (const theme of THEMES) {
     const option = document.createElement('option');
     option.value = theme.id;
@@ -262,6 +303,10 @@ function populateThemes() {
     elements.themeSelect.append(option);
   }
   elements.themeSelect.value = state.theme;
+  if (!elements.themeSelect.value) {
+    state.theme = 'one-dark';
+    elements.themeSelect.value = state.theme;
+  }
 }
 
 function relativeTime(value) {
@@ -937,28 +982,35 @@ function renderEditorEnvDialog() {
   const env = state.editorEnv;
   const detected = elements.editorEnvDetected;
   detected.replaceChildren();
+  const row = (label, value) => {
+    const line = document.createElement('div');
+    line.className = 'editor-env-row';
+    const name = document.createElement('span');
+    name.className = 'editor-env-row-label';
+    name.textContent = label;
+    const text = document.createElement('span');
+    text.className = 'editor-env-row-value';
+    text.textContent = value;
+    line.append(name, text);
+    return line;
+  };
   const describe = (label, info) => {
-    const row = document.createElement('div');
-    row.className = 'editor-env-row';
-    if (!info) {
-      row.textContent = `${label}：检测中…`;
-      return row;
-    }
-    if (!info.available) {
-      row.textContent = `${label}：未检测到`;
-      return row;
-    }
+    if (!info) return row(label, '检测中…');
+    if (!info.available) return row(label, '未检测到');
     const managers = info.managers?.length ? `（${info.managers.join('、')}）` : '';
-    row.textContent = `${label}：${info.version || '已安装'} · 配置${info.hasConfig ? '有' : '无'} · 插件 ${info.pluginCount} 个${managers}`;
-    return row;
+    return row(label, `${info.version || '已安装'} · 配置${info.hasConfig ? '有' : '无'} · 插件 ${info.pluginCount} 个${managers}`);
   };
   detected.append(describe('neovim', env?.nvim), describe('vim', env?.vim));
-  const active = document.createElement('div');
-  active.className = 'editor-env-row';
-  active.textContent = env?.available
-    ? `当前：${env.active.program === 'custom' ? `自定义命令 ${env.active.command}` : env.active.program}${env.active.appName ? `（配置名 ${env.active.appName}）` : ''}`
-    : '当前：内置编辑器（未关联本地 vim/neovim）';
-  detected.append(active);
+  const activeText = env?.available
+    ? `${env.active.program === 'custom' ? `自定义命令 ${env.active.command}` : env.active.program}${env.active.appName ? `（配置名 ${env.active.appName}）` : ''}`
+    : '内置编辑器（未关联本地 vim/neovim）';
+  detected.append(row('当前编辑器', activeText));
+  const font = state.editorProfile?.available ? state.editorProfile.font : null;
+  if (font?.family) {
+    const size = font.points ? ` · ${font.points}pt` : '';
+    const px = font.sizePx ? ` → ${font.sizePx}px` : '';
+    detected.append(row('同步字体', `${font.family}${size}${px}`));
+  }
   const program = env?.saved?.program || 'auto';
   for (const radio of document.querySelectorAll('input[name="editor-env-program"]')) radio.checked = radio.value === program;
   elements.editorEnvCommand.value = env?.saved?.command || '';
@@ -989,6 +1041,119 @@ async function loadEditorEnv({ openDialog = false } = {}) {
   applyEditorAvailability();
   if (openDialog) renderEditorEnvDialog();
   return state.editorEnv;
+}
+
+function displayKeymapKey(lhs, leader) {
+  let value = String(lhs || '');
+  if (leader && value.startsWith(leader)) {
+    value = `${leader === ' ' ? '<Space>' : '<Leader>'}${value.slice(leader.length)}`;
+  }
+  if (!value) return '<空>';
+  return value;
+}
+
+function normalKeymaps(profile) {
+  return (profile?.keymaps || []).filter((map) => map.mode === 'n' && map.desc && !map.lhs.startsWith('<'));
+}
+
+// 状态栏只放“本地配置里真实存在”的映射：优先 leader 映射，其次普通模式描述映射。
+function renderNvimShortcuts() {
+  const profile = state.editorProfile;
+  if (!profile?.available) {
+    elements.nvimNote.textContent = profile?.error
+      ? `本地配置不可用：${profile.error}`
+      : '未关联本地 vim/neovim；快捷键以内置编辑器为准';
+    elements.nvimNote.title = '';
+    return;
+  }
+  const maps = normalKeymaps(profile);
+  const leader = profile.leader || '';
+  const leaderMaps = leader ? maps.filter((map) => map.lhs.startsWith(leader)) : [];
+  const chosen = (leaderMaps.length ? leaderMaps : maps).slice(0, 5);
+  const parts = chosen.map((map) => `${displayKeymapKey(map.lhs, leader)} ${map.desc}`);
+  const remaining = maps.length - chosen.length;
+  elements.nvimNote.textContent = `本地 ${profile.editor.program} · ${profile.colorscheme} · ${parts.join(' · ')}${remaining > 0 ? ` · +${remaining}` : ''}`;
+  elements.nvimNote.title = maps
+    .map((map) => `${displayKeymapKey(map.lhs, leader)}  ${map.desc}`)
+    .join('\n');
+}
+
+function renderNvimKeymaps() {
+  const profile = state.editorProfile;
+  elements.nvimKeymapBody.replaceChildren();
+  if (!profile?.available) {
+    elements.nvimKeymapSubtitle.textContent = profile?.error || '未读取到本地 vim/neovim 配置。';
+    const empty = document.createElement('div');
+    empty.className = 'nvim-keymap-empty';
+    empty.textContent = '请先在左下角「编辑器环境」关联本地 vim/neovim。';
+    elements.nvimKeymapBody.append(empty);
+    return;
+  }
+  const leader = profile.leader || '';
+  elements.nvimKeymapSubtitle.textContent = `来源：${profile.editor.program} ${profile.editor.version || ''} · colorscheme ${profile.colorscheme} · leader ${leader === ' ' ? '<Space>' : (leader || '未设置')}`;
+  const labels = { n: '普通模式', v: '可视模式', x: '可视模式（选择）', i: '插入模式', o: '操作符待决', t: '终端模式', c: '命令行模式' };
+  const byMode = new Map();
+  for (const map of profile.keymaps || []) {
+    if (!byMode.has(map.mode)) byMode.set(map.mode, []);
+    byMode.get(map.mode).push(map);
+  }
+  let count = 0;
+  for (const [mode, maps] of [...byMode.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const group = document.createElement('section');
+    group.className = 'nvim-keymap-group';
+    const heading = document.createElement('h3');
+    heading.textContent = `${labels[mode] || mode}（${mode}）`;
+    group.append(heading);
+    for (const map of maps) {
+      const row = document.createElement('div');
+      row.className = 'nvim-keymap-row';
+      const key = document.createElement('kbd');
+      key.textContent = displayKeymapKey(map.lhs, leader);
+      const desc = document.createElement('span');
+      desc.className = 'nvim-keymap-desc';
+      desc.textContent = map.desc || map.rhs || '';
+      const modeTag = document.createElement('span');
+      modeTag.className = 'nvim-keymap-mode';
+      modeTag.textContent = map.mode;
+      row.append(key, desc, modeTag);
+      group.append(row);
+      count += 1;
+    }
+    elements.nvimKeymapBody.append(group);
+  }
+  if (!count) {
+    const empty = document.createElement('div');
+    empty.className = 'nvim-keymap-empty';
+    empty.textContent = '本地配置没有返回可显示的按键映射。';
+    elements.nvimKeymapBody.append(empty);
+  }
+}
+
+async function loadEditorProfile({ refresh = false } = {}) {
+  try {
+    state.editorProfile = await api(`/api/editor/profile${refresh ? '?refresh=1' : ''}`);
+  } catch (error) {
+    state.editorProfile = { available: false, error: error.message };
+  }
+  const profile = state.editorProfile;
+  if (profile?.available) {
+    if (!state.themeExplicit && state.theme !== 'local') state.theme = 'local';
+    editor.setProfile(profile);
+    applyEditorFont(profile.font);
+    const palette = editor.setTheme(state.theme);
+    applyShellTheme(palette);
+    window.CodeReaderTerminal?.setTheme(profile);
+  } else {
+    editor.setProfile(null);
+    applyEditorFont(null);
+    if (state.theme === 'local') {
+      state.theme = 'one-dark';
+      applyShellTheme(editor.setTheme(state.theme));
+    }
+  }
+  populateThemes();
+  renderNvimShortcuts();
+  return profile;
 }
 
 function setEditorMode(mode) {
@@ -1186,16 +1351,44 @@ async function selectFile(filePath, reveal = null) {
   }
 }
 
+// 光标移动时只有跨出当前函数范围才重新查询；函数内部移动保持现有面板内容，
+// 避免内核大仓上每次 j/k 都触发 blame 请求与面板闪烁。
+function historyCoversLine(history, filePath, line) {
+  return Boolean(history)
+    && history.status === 'done'
+    && history.path === filePath
+    && Number.isInteger(history.lineStart)
+    && Number.isInteger(history.lineEnd)
+    && line >= history.lineStart
+    && line <= history.lineEnd
+    && (!history.head || !state.repository?.head || history.head === state.repository.head);
+}
+
+// 缓存按服务端返回的函数区间命中：同一函数内不同行共用一条历史。
+function cachedFunctionHistory(filePath, line) {
+  if (!state.repository) return null;
+  const prefix = `${state.repository.head}:`;
+  const key = `${prefix}${filePath}:${line}`;
+  if (state.historyCache.has(key)) return state.historyCache.get(key);
+  for (const [cacheKey, value] of state.historyCache) {
+    if (!cacheKey.startsWith(prefix)) continue;
+    if (value.path === filePath && line >= value.lineStart && line <= value.lineEnd) return value;
+  }
+  return null;
+}
+
 async function fetchFunctionHistory(line) {
   if (!state.repository || state.currentFile === null || state.activeLine !== line) return;
   const filePath = state.currentFile;
-  const key = `${state.repository.head}:${filePath}:${line}`;
-  if (state.historyCache.has(key)) {
-    state.history = { path: filePath, line, status: 'done', ...state.historyCache.get(key) };
+  if (historyCoversLine(state.history, filePath, line)) return;
+  const cached = cachedFunctionHistory(filePath, line);
+  if (cached) {
+    state.history = { path: filePath, line, status: 'done', ...cached };
     renderHistory();
     return;
   }
   state.historyController?.abort();
+  const key = `${state.repository.head}:${filePath}:${line}`;
   const controller = new AbortController();
   state.historyController = controller;
   state.history = { path: filePath, line, status: 'loading', commits: [] };
@@ -1756,6 +1949,20 @@ async function gotoDefinition() {
   }
 }
 
+const referencePreviewCache = new Map();
+
+async function loadReferencePreview(item) {
+  if (!state.repository) throw new Error('仓库已关闭');
+  const key = `${state.repository.id}:${state.repository.head}:${item.path}:${item.line}`;
+  if (referencePreviewCache.has(key)) return referencePreviewCache.get(key);
+  const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/context?path=${encodeURIComponent(item.path)}&line=${encodeURIComponent(item.line)}&radius=10`);
+  referencePreviewCache.set(key, data);
+  if (referencePreviewCache.size > 200) {
+    referencePreviewCache.delete(referencePreviewCache.keys().next().value);
+  }
+  return data;
+}
+
 async function gotoReferences() {
   if (!state.repository || !state.currentFile) return;
   const position = editor.getCursor();
@@ -1779,6 +1986,9 @@ async function gotoReferences() {
     }
     editor.showQuickpick(data.locations, (picked) => {
       jumpTo(picked);
+    }, {
+      title: `${data.locations.length} 个引用 · j/k 或 ↑↓ 选择 · Enter 跳转 · Esc 取消`,
+      preview: loadReferencePreview,
     });
   } catch (error) {
     elements.sourceStatus.textContent = `引用查询失败：${error.message}`;
@@ -1952,9 +2162,45 @@ window.__ts = {
       questionOpen: state.questionOpen,
       explaining: state.explaining,
       lsp: state.lsp,
+      theme: state.theme,
+      editorProfile: state.editorProfile
+        ? {
+          available: Boolean(state.editorProfile.available),
+          colorscheme: state.editorProfile.colorscheme || null,
+          colors: Object.keys(state.editorProfile.colors || {}).length,
+          keymaps: (state.editorProfile.keymaps || []).length,
+          error: state.editorProfile.error || null,
+        }
+        : null,
       editor: editor?.snapshot() || null,
       jumpStackDepth: jumpStack.length,
     };
+  },
+  // 自动化/调试入口：直接打开文件位置与触发引用查询。
+  async openFile(file, line = 1, character = 0) {
+    const before = {
+      currentFile: state.currentFile,
+      repository: Boolean(state.repository),
+      activeLine: state.activeLine,
+    };
+    await selectFile(file, { line, character });
+    return {
+      before,
+      currentFile: state.currentFile,
+      activeLine: state.activeLine,
+      sourceLines: state.source?.lines || 0,
+      cursor: editor.getCursor(),
+      historyStatus: state.history?.status || null,
+    };
+  },
+  gotoReferences() {
+    return gotoReferences();
+  },
+  getValue() {
+    return editor.getValue();
+  },
+  closeQuickpick() {
+    editor.closeQuickpick();
   },
 };
 
@@ -1964,6 +2210,11 @@ elements.tabNvim.addEventListener('click', () => setEditorMode('nvim'));
 elements.nvimClose.addEventListener('click', closeNvim);
 elements.nvimRestart.addEventListener('click', restartNvim);
 elements.nvimOpenCurrent.addEventListener('click', openCurrentInNvim);
+elements.nvimKeys.addEventListener('click', () => {
+  renderNvimKeymaps();
+  elements.nvimKeymapDialog.showModal();
+});
+elements.nvimKeymapClose.addEventListener('click', () => elements.nvimKeymapDialog.close());
 elements.commitOverlayClose.addEventListener('click', closeCommitOverlay);
 elements.commitOverlay.addEventListener('click', (event) => {
   if (event.target === elements.commitOverlay) closeCommitOverlay();
@@ -1972,11 +2223,15 @@ elements.editorEnvSettings.addEventListener('click', async () => {
   elements.editorEnvDialog.showModal();
   renderEditorEnvDialog();
   await loadEditorEnv({ openDialog: true });
+  if (!state.editorProfile?.available) await loadEditorProfile();
+  renderEditorEnvDialog();
 });
 elements.editorEnvClose.addEventListener('click', () => elements.editorEnvDialog.close());
 elements.editorEnvRefresh.addEventListener('click', async () => {
   elements.editorEnvProgress.textContent = '检测中…';
   await loadEditorEnv({ openDialog: true });
+  await loadEditorProfile({ refresh: true }).catch(() => {});
+  renderEditorEnvDialog();
   elements.editorEnvProgress.textContent = '';
 });
 for (const radio of document.querySelectorAll('input[name="editor-env-program"]')) {
@@ -2001,6 +2256,7 @@ elements.editorEnvSave.addEventListener('click', async () => {
     renderEditorEnvDialog();
     elements.editorEnvProgress.textContent = '已保存';
     setTimeout(() => { elements.editorEnvProgress.textContent = ''; }, 1500);
+    loadEditorProfile({ refresh: true }).catch(() => {});
   } catch (error) {
     elements.editorEnvError.textContent = error.message;
     elements.editorEnvProgress.textContent = '';
@@ -2081,6 +2337,7 @@ elements.themeSelect.addEventListener('change', () => {
   const id = elements.themeSelect.value;
   const palette = editor.setTheme(id);
   state.theme = id;
+  state.themeExplicit = true;
   localStorage.setItem(THEME_KEY, id);
   applyShellTheme(palette);
 });
@@ -2210,8 +2467,13 @@ elements.openDialog.addEventListener('cancel', (event) => {
   if (state.opening) event.preventDefault();
 });
 
+// 捕获阶段先处理引用列表按键：否则 CodeMirror/Vim 会先消费 Enter（把当前行换行），
+// 弹窗的“Enter 跳转”永远见不到事件。
 document.addEventListener('keydown', (event) => {
-  if (editor.quickpickKeydown(event)) return;
+  editor.quickpickKeydown(event);
+}, true);
+
+document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !elements.commitOverlay.hidden) {
     event.preventDefault();
     closeCommitOverlay();
@@ -2255,7 +2517,12 @@ initSplitter('right');
 populateThemes();
 applyShellTheme(editor.setTheme(state.theme));
 loadReadingHistory();
-loadEditorEnv().catch(() => {});
+loadEditorEnv()
+  .then(() => loadEditorProfile())
+  .catch((error) => {
+    console.error('[editor-profile] 加载失败：', error);
+    renderNvimShortcuts();
+  });
 const { createLlmSettings } = await import('./llm-settings.js');
 const llmSettings = createLlmSettings({
   api,

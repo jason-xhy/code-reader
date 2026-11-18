@@ -186,6 +186,31 @@ export async function readSource(root, filePath) {
   };
 }
 
+// 引用预览：目标行前后 N 行 + 所在函数（Caller）范围，供 gr 弹窗的另一窗口显示。
+export async function sourceContext(root, filePath, line, radius = 10) {
+  validateRelativePath(filePath);
+  if (!Number.isInteger(line) || line < 1) {
+    throw new AppError('行号必须是正整数', 400, 'INVALID_LINE');
+  }
+  const windowRadius = Math.min(Math.max(Number.isInteger(radius) ? radius : 10, 1), 200);
+  const source = await readSource(root, filePath);
+  if (line > source.lines) throw new AppError('行号超出文件范围', 400, 'INVALID_LINE');
+  const lineStart = Math.max(1, line - windowRadius);
+  const lineEnd = Math.min(source.lines, line + windowRadius);
+  const segment = detectFunctionSegment(source.content, line);
+  const rows = source.content.split('\n').slice(lineStart - 1, lineEnd);
+  return {
+    path: filePath,
+    line,
+    lineStart,
+    lineEnd,
+    caller: segment?.symbol || null,
+    callerStart: segment?.lineStart || null,
+    callerEnd: segment?.lineEnd || null,
+    lines: rows.map((text, index) => ({ number: lineStart + index, text })),
+  };
+}
+
 export async function lineHistory(root, filePath, line) {
   validateRelativePath(filePath);
   if (!Number.isInteger(line) || line < 1) {

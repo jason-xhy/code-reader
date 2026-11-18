@@ -32,6 +32,47 @@ let fitAddon = null;
 let socket = null;
 let session = null;
 let observer = null;
+let profileTheme = null;
+let profileFont = null;
+
+const DEFAULT_FONT_FAMILY = '"SFMono-Regular", Consolas, "Liberation Mono", monospace';
+
+// 与内置编辑器同一字体来源：本地终端/桌面等宽字体（profile.font）。
+function fontOptions(font) {
+  const family = typeof font?.family === 'string' ? font.family.replace(/["']/g, ' ').trim() : '';
+  if (!family) return null;
+  const size = Number(font?.sizePx);
+  return {
+    fontFamily: `"${family}", ${DEFAULT_FONT_FAMILY}`,
+    fontSize: Number.isFinite(size) && size >= 9 && size <= 28 ? Math.round(size) : 13,
+  };
+}
+
+// 用本地 nvim 的 Normal/Visual/Cursor 高亮覆盖 xterm 底色，避免面板与 nvim
+// 自身 colorscheme 之间的黑边/色差。
+function setTheme(profile) {
+  if (!profile?.available) return;
+  const colors = profile.colors || {};
+  const pick = (group, key) => colors[group]?.[key];
+  const next = {
+    ...THEME,
+    background: pick('Normal', 'bg') || THEME.background,
+    foreground: pick('Normal', 'fg') || THEME.foreground,
+    cursor: pick('Cursor', 'bg') || pick('Normal', 'fg') || THEME.cursor,
+    selectionBackground: pick('Visual', 'bg') || THEME.selectionBackground,
+  };
+  next.cursorAccent = next.background;
+  profileTheme = next;
+  profileFont = fontOptions(profile.font);
+  if (term) {
+    term.options.theme = next;
+    if (profileFont) {
+      term.options.fontFamily = profileFont.fontFamily;
+      term.options.fontSize = profileFont.fontSize;
+      fitNow();
+    }
+  }
+}
 
 function host() {
   return document.getElementById('nvim-host');
@@ -70,11 +111,11 @@ function createTerminal() {
     allowProposedApi: true,
     convertEol: false,
     cursorBlink: true,
-    fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-    fontSize: 13,
+    fontFamily: profileFont?.fontFamily || DEFAULT_FONT_FAMILY,
+    fontSize: profileFont?.fontSize || 13,
     lineHeight: 1.15,
     scrollback: 10000,
-    theme: THEME,
+    theme: profileTheme || THEME,
   });
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
@@ -198,4 +239,4 @@ function openFile(file, line) {
   term.focus();
 }
 
-window.CodeReaderTerminal = { open, close, openFile, refreshSize, isOpen: () => Boolean(term) };
+window.CodeReaderTerminal = { open, close, openFile, refreshSize, setTheme, isOpen: () => Boolean(term) };

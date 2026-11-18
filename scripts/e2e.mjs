@@ -144,6 +144,41 @@ await new Promise((resolve) => stub.listen(8899, '127.0.0.1', resolve));
 const dataDir = path.join(root, 'data');
 mkdirSync(dataDir, { recursive: true });
 
+// 固定 editor profile，避免 e2e 依赖本机 nvim 配置；同时覆盖 profile 归一化链路。
+const profileFixture = path.join(root, 'editor-profile.json');
+writeFileSync(profileFixture, JSON.stringify({
+  colorscheme: 'fixture-theme',
+  background: 'dark',
+  termguicolors: true,
+  leader: ' ',
+  localleader: ' ',
+  font: { family: 'DejaVu Sans Mono', points: 12, source: 'fixture' },
+  options: {
+    tabstop: 8,
+    shiftwidth: 8,
+    expandtab: false,
+    number: true,
+    relativenumber: false,
+    cursorline: true,
+    wrap: true,
+    list: true,
+    listchars: 'nbsp:␣,tab:» ,trail:·',
+  },
+  colors: {
+    Normal: { fg: '#c8d3f5', bg: '#222436' },
+    Comment: { fg: '#636da6' },
+    String: { fg: '#c3e88d' },
+    Function: { fg: '#82aaff' },
+    Statement: { fg: '#c099ff' },
+    Visual: { bg: '#2d3f76' },
+    LineNr: { fg: '#3b4261' },
+  },
+  keymaps: [
+    { mode: 'n', lhs: ' sf', rhs: '', desc: '[S]earch [F]iles', silent: false },
+    { mode: 'n', lhs: '<C-h>', rhs: '<C-w><C-h>', desc: 'Move focus to the left window', silent: false },
+  ],
+}, null, 2));
+
 const server = spawn(process.execPath, ['server.js'], {
   cwd: repoRoot,
   env: {
@@ -155,6 +190,7 @@ const server = spawn(process.execPath, ['server.js'], {
     LLM_BASE_URL: 'http://127.0.0.1:8899/v1',
     LLM_PROTOCOL: 'openai',
     CODE_READER_NVIM: '/bin/cat',
+    CODE_READER_PROFILE_JSON: profileFixture,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -342,6 +378,19 @@ try {
   const functionHistoryCached = await api('GET', `${repoBase}/function-history?path=sample.c&line=4`);
   assert(functionHistoryCached.data.cached === true && functionHistoryCached.data.commits.length === 1, '函数级历史按函数范围命中缓存');
 
+  const referenceContext = await api('GET', `${repoBase}/context?path=sample.c&line=5&radius=2`);
+  assert(
+    referenceContext.status === 200
+    && referenceContext.data.lineStart === 3
+    && referenceContext.data.lineEnd === 7
+    && referenceContext.data.lines.length === 5
+    && referenceContext.data.caller === 'demo_handle'
+    && referenceContext.data.callerStart === 3
+    && referenceContext.data.callerEnd === 6,
+    '引用上下文返回前后 N 行与 Caller 函数范围',
+    JSON.stringify(referenceContext.data),
+  );
+
   const docsDir = path.join(root, 'docs');
   mkdirSync(docsDir, { recursive: true });
   writeFileSync(path.join(docsDir, 'xhci-spec.md'), '# XHCI\n\nTRB_RING_MAGIC_123 规范要求：传输事件必须带 TRB 指针。\n');
@@ -421,8 +470,60 @@ try {
   assert(!html.includes('/vendor/ace/ace.js'), '首页不再加载 Ace');
 
   assert(html.includes('tab-nvim') && html.includes('nvim-term') && html.includes('nvim-status'), '首页包含 nvim 面板容器');
+  assert(html.includes('nvim-note') && html.includes('nvim-keys') && html.includes('nvim-keymap-dialog'), '首页包含本地快捷键状态栏与映射弹窗');
   assert(html.includes('commit-overlay') && html.includes('editor-env-dialog'), '首页包含提交弹窗与编辑器环境对话框');
   assert(appSource.includes('function showCommit') && appSource.includes('faq-toggle'), '前端提交弹窗与 FAQ 折叠实现存在');
+  assert(appSource.includes('historyCoversLine') && appSource.includes('cachedFunctionHistory'), '前端函数内移动不重复刷新历史');
+  assert(appSource.includes('loadReferencePreview') && editorSource.includes('quickpick-preview'), '前端引用列表带上下文预览');
+  assert(appSource.includes('applyEditorFont') && appSource.includes('code-reader-theme-v2'), '前端同步本地字体并以本地主题为默认');
+  assert(html.includes('footer-status') && html.includes('editor-env-options'), '首页底部状态行与编辑器环境选项容器');
+  assert(editorSource.includes('whitespaceExtension') && editorSource.includes('setProfile') && editorSource.includes('profileTheme'), '编辑器支持本地 profile 主题与 listchars');
+  const editorProfile = await api('GET', '/api/editor/profile');
+  assert(
+    editorProfile.status === 200
+    && editorProfile.data.available === true
+    && editorProfile.data.colorscheme === 'fixture-theme'
+    && editorProfile.data.options?.tabstop === 8
+    && editorProfile.data.keymaps?.length >= 2
+    && editorProfile.data.font?.family === 'DejaVu Sans Mono'
+    && editorProfile.data.font?.sizePx === 16,
+    '编辑器 profile 返回本地配色/选项/映射/字体',
+    JSON.stringify(editorProfile.data).slice(0, 300),
+  );
+  const { profileTheme } = await import('../web-src/themes.js');
+  const { parseFontSpec } = await import('../src/editor-profile.js');
+  assert(
+    parseFontSpec('JetBrainsMono Nerd Font:h14')?.points === 14
+    && parseFontSpec('DejaVu Sans Mono 12')?.family === 'DejaVu Sans Mono'
+    && parseFontSpec('DejaVu Sans Mono 12')?.points === 12
+    && parseFontSpec('') === null,
+    '字体规格解析支持 guifont 与桌面格式',
+    JSON.stringify([parseFontSpec('JetBrainsMono Nerd Font:h14'), parseFontSpec('DejaVu Sans Mono 12')]),
+  );
+  const localTheme = profileTheme({
+    background: 'dark',
+    colorscheme: 'fixture-theme',
+    colors: {
+      Normal: { fg: '#c8d3f5', bg: '#222436' },
+      Identifier: { fg: '#c099ff' },
+      '@keyword': { fg: '#fca7ea', italic: true },
+      '@variable': { fg: '#c8d3f5' },
+      '@property': { fg: '#4fd6be' },
+      '@function': { fg: '#82aaff' },
+      '@type': { fg: '#65bcff' },
+      '@type.builtin': { fg: '#589ed7' },
+    },
+  });
+  assert(
+    localTheme.syntax.keyword === '#fca7ea'
+    && localTheme.styles?.keyword === 'italic'
+    && localTheme.syntax.variable === '#c8d3f5'
+    && localTheme.syntax.property === '#4fd6be'
+    && localTheme.syntax.typeBuiltin === '#589ed7'
+    && localTheme.editor.background === '#222436',
+    '本地主题优先取 treesitter 组（keyword/variable/property/builtin）',
+    JSON.stringify({ syntax: localTheme.syntax, styles: localTheme.styles }).slice(0, 400),
+  );
   const editorEnv = await api('GET', '/api/editor');
   assert(editorEnv.status === 200 && Boolean(editorEnv.data.nvim) && Boolean(editorEnv.data.active), '编辑器环境接口返回探测结果', JSON.stringify(editorEnv.data).slice(0, 200));
   const builtin = await api('POST', '/api/editor', { program: 'builtin' });

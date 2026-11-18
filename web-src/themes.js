@@ -2,7 +2,20 @@
 // grill: 成品检索=skill 库无 code-reader 配色成品; 输入固定=固定主题 id; 步骤机械=按调色板生成 CM6 theme+highlight; 判读固定=编辑器扩展; 失效场景=构造不出（仅本应用）
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { EditorView } from '@codemirror/view';
-import { tags } from '@lezer/highlight';
+import { Tag, tags } from '@lezer/highlight';
+
+// 内置 C/C++ 词法比 legacy 模式细：struct/return/const、函数调用、成员访问、
+// 全大写宏在 nvim(treesitter) 里各用不同高亮组，这里给它们独立 tag。
+export const C_TOKEN_TAGS = {
+  keywordReturn: Tag.define(),
+  keywordType: Tag.define(),
+  keywordStorage: Tag.define(),
+  constantName: Tag.define(),
+  callName: Tag.define(),
+  memberName: Tag.define(),
+  typeNameToken: Tag.define(),
+  builtinType: Tag.define(),
+};
 
 // 主题来源（GitHub 热门 Vim colorscheme 调色板）：
 // gruvbox.nvim / nord-vim / dracula/vim / tokyonight.nvim / catppuccin/nvim /
@@ -70,14 +83,163 @@ export function themeById(id) {
   return THEMES.find((theme) => theme.id === id) || THEMES[0];
 }
 
+// 用本地 vim/neovim 的实际 highlight 组生成同款调色板：内置编辑器打开即与
+// 用户终端里的 colorscheme 一致（而不是应用自带的近似主题）。
+// 优先取 treesitter 组（@keyword/@function/...）：开启 treesitter 后 legacy 组
+// 与屏幕颜色不一致（Identifier 紫色但 @variable 是前景色），legacy 只作兜底。
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+function colorOf(colors, group, key = 'fg') {
+  const value = colors?.[group]?.[key];
+  return HEX_COLOR.test(String(value || '')) ? value : null;
+}
+
+export function profileTheme(profile) {
+  const colors = profile?.colors || {};
+  const pick = (group, key = 'fg') => colorOf(colors, group, key);
+  const ts = (name, key = 'fg') => pick(`@${name}`, key);
+  const first = (...values) => values.find(Boolean) || null;
+  const light = profile?.background === 'light';
+
+  const background = pick('Normal', 'bg') || (light ? '#ffffff' : '#222436');
+  const foreground = pick('Normal', 'fg') || (light ? '#000000' : '#c8d3f5');
+  const comment = first(ts('comment'), pick('Comment'), pick('NonText')) || (light ? '#0000ff' : '#7f8794');
+  const panel = first(pick('Pmenu', 'bg'), pick('NormalFloat', 'bg')) || (light ? '#f0f0f0' : background);
+  const border = first(pick('LineNr'), pick('NonText'), pick('WinSeparator')) || (light ? '#cccccc' : '#3b4261');
+  const accent = first(ts('function'), pick('Function'), pick('Identifier'), pick('Statement')) || foreground;
+  const cursor = pick('Cursor', 'bg') || foreground;
+  const gutter = pick('LineNr', 'fg') || comment;
+  const activeLine = pick('CursorLine', 'bg') || background;
+  const gutterActive = pick('CursorLine', 'bg') || activeLine;
+  const gutterActiveText = pick('CursorLineNr', 'fg') || accent;
+  const selection = pick('Visual', 'bg') || (light ? '#c8d8f8' : '#44475a');
+
+  const keyword = first(ts('keyword'), pick('Keyword'), pick('Statement')) || (light ? '#af00db' : '#fca7ea');
+  const keywordControl = first(ts('keyword.conditional'), ts('keyword.repeat'), ts('keyword.exception'), keyword);
+  const keywordReturn = first(ts('keyword.return'), keyword);
+  const keywordType = first(ts('keyword.type'), ts('keyword.storage.type'), keyword);
+  const keywordStorage = first(ts('keyword.storage'), ts('keyword.storage.modifier'), keyword);
+  const keywordImport = first(ts('keyword.import'), ts('keyword.directive'), pick('Include'), keyword);
+  const keywordOperator = first(ts('keyword.operator'), pick('Operator'), keyword);
+  const string = first(ts('string'), pick('String'), pick('Character')) || (light ? '#008000' : '#c3e88d');
+  const stringEscape = first(ts('string.escape'), ts('string.special'), string);
+  const number = first(ts('number'), pick('Number'), pick('Constant')) || (light ? '#098658' : '#ff966c');
+  const boolean = first(ts('boolean'), pick('Boolean'), number);
+  const constant = first(ts('constant'), pick('Constant'), number);
+  const constantBuiltin = first(ts('constant.builtin'), pick('Type'), constant);
+  const fn = first(ts('function'), pick('Function')) || accent;
+  const functionBuiltin = first(ts('function.builtin'), fn);
+  const macro = first(ts('function.macro'), pick('Macro'), pick('PreProc'), fn);
+  const type = first(ts('type'), pick('Type'), pick('Structure'), pick('Typedef')) || keyword;
+  const typeBuiltin = first(ts('type.builtin'), pick('Type'), type);
+  const typeQualifier = first(ts('type.qualifier'), keywordType);
+  const variable = first(ts('variable'), foreground);
+  const parameter = first(ts('variable.parameter'), ts('variable'), variable);
+  const member = first(ts('variable.member'), ts('property'), pick('Identifier'), foreground);
+  const property = first(ts('property'), ts('variable.member'), pick('Identifier'), foreground);
+  const variableBuiltin = first(ts('variable.builtin'), pick('Special'), constant);
+  const operator = first(ts('operator'), pick('Operator')) || foreground;
+  const punctuation = first(ts('punctuation'), foreground);
+  const bracket = first(ts('punctuation.bracket'), punctuation);
+  const separator = first(ts('punctuation.delimiter'), punctuation, operator);
+  const label = first(ts('label'), pick('Label'), keyword);
+  const preproc = first(ts('preproc'), pick('PreProc'), macro);
+  const module = first(ts('module'), pick('Include'), type);
+  const attribute = first(ts('attribute'), pick('Special'), property);
+  const tag = first(ts('tag'), pick('Tag'), keyword);
+  const heading = first(ts('markup.heading'), pick('Title'), fn);
+  const link = first(ts('markup.link'), pick('Underlined'), ts('text.uri'), accent);
+
+  const fontStyleOf = (tsName, legacyName) => {
+    const entry = colors[`@${tsName}`] || (legacyName ? colors[legacyName] : null);
+    if (!entry) return undefined;
+    return [entry.italic ? 'italic' : '', entry.bold ? 'bold' : ''].filter(Boolean).join(' ') || '';
+  };
+  const styles = {
+    keyword: fontStyleOf('keyword', 'Keyword'),
+    keywordControl: fontStyleOf('keyword.conditional', 'Keyword'),
+    keywordReturn: fontStyleOf('keyword.return') ?? fontStyleOf('keyword'),
+    keywordType: fontStyleOf('keyword.type') ?? fontStyleOf('keyword'),
+    keywordStorage: fontStyleOf('keyword.storage') ?? fontStyleOf('keyword'),
+    comment: fontStyleOf('comment', 'Comment') ?? 'italic',
+  };
+
+  return {
+    id: 'local',
+    name: `本地 · ${profile?.colorscheme || 'vim'}`,
+    dark: !light,
+    shell: {
+      background,
+      panel,
+      border,
+      accent,
+      text: foreground,
+      muted: comment,
+    },
+    editor: {
+      background,
+      foreground,
+      gutter,
+      gutterActive,
+      gutterActiveText,
+      activeLine,
+      selection,
+      cursor,
+      border,
+    },
+    styles,
+    syntax: {
+      keyword,
+      keywordControl,
+      keywordReturn,
+      keywordType,
+      keywordStorage,
+      keywordImport,
+      keywordOperator,
+      string,
+      stringEscape,
+      comment,
+      number,
+      boolean,
+      constant,
+      constantBuiltin,
+      function: fn,
+      functionBuiltin,
+      macro,
+      type,
+      typeBuiltin,
+      typeQualifier,
+      variable,
+      parameter,
+      member,
+      property,
+      variableBuiltin,
+      operator,
+      punctuation,
+      bracket,
+      separator,
+      label,
+      preproc,
+      module,
+      attribute,
+      tag,
+      heading,
+      link,
+    },
+  };
+}
+
 export function themeExtension(id) {
-  const theme = themeById(id);
+  return themeExtensionFor(themeById(id));
+}
+
+export function themeExtensionFor(theme) {
   const ui = EditorView.theme({
     '&': { height: '100%', backgroundColor: theme.editor.background, color: theme.editor.foreground },
     '.cm-scroller': {
-      fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-      fontSize: '12px',
-      lineHeight: '24px',
+      fontFamily: 'var(--cr-editor-font, "SFMono-Regular", Consolas, "Liberation Mono", monospace)',
+      fontSize: 'var(--cr-editor-font-size, 12px)',
+      lineHeight: 'var(--cr-editor-line-height, 24px)',
     },
     '.cm-content': { caretColor: theme.editor.cursor },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: theme.editor.cursor },
@@ -86,7 +248,7 @@ export function themeExtension(id) {
       color: theme.editor.gutter,
       borderRight: `1px solid ${theme.editor.border}`,
     },
-    '.cm-activeLineGutter': { backgroundColor: theme.editor.gutterActive, color: theme.editor.cursor },
+    '.cm-activeLineGutter': { backgroundColor: theme.editor.gutterActive, color: theme.editor.gutterActiveText || theme.editor.cursor },
     '.cm-activeLine': { backgroundColor: theme.editor.activeLine },
     '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, .cm-content ::selection': {
       backgroundColor: theme.editor.selection,
@@ -102,20 +264,62 @@ export function themeExtension(id) {
     },
     '.cm-searchMatch': { backgroundColor: theme.editor.selection, outline: `1px solid ${theme.shell.accent}` },
     '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: theme.shell.accent, color: theme.editor.background },
-  }, { dark: true });
+    '.cm-ws-mark': { color: theme.syntax.comment, opacity: '0.75' },
+  }, { dark: theme.dark !== false });
+  const syntax = theme.syntax || {};
+  const color = (key, ...fallbacks) => {
+    for (const candidate of [key, ...fallbacks]) {
+      if (syntax[candidate]) return syntax[candidate];
+    }
+    return theme.editor?.foreground || '#000000';
+  };
+  // theme.styles 存在时以它为准（空串=明确不加样式，本地主题据此跟随 nvim
+  // 是否 italic）；不存在时沿用内置主题的默认样式。
+  const font = (key, fallback) => (
+    theme.styles && Object.prototype.hasOwnProperty.call(theme.styles, key)
+      ? (theme.styles[key] || undefined)
+      : fallback
+  );
   const highlight = HighlightStyle.define([
-    { tag: tags.keyword, color: theme.syntax.keyword },
-    { tag: tags.string, color: theme.syntax.string },
-    { tag: tags.comment, color: theme.syntax.comment, fontStyle: 'italic' },
-    { tag: tags.number, color: theme.syntax.number },
-    { tag: [tags.bool, tags.null], color: theme.syntax.constant },
-    { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: theme.syntax.function },
-    { tag: [tags.typeName, tags.className], color: theme.syntax.type },
-    { tag: tags.operator, color: theme.syntax.operator },
-    { tag: tags.variableName, color: theme.syntax.variable },
-    { tag: [tags.propertyName, tags.attributeName], color: theme.syntax.property },
-    { tag: [tags.heading, tags.strong], color: theme.syntax.heading, fontWeight: 'bold' },
-    { tag: tags.link, color: theme.syntax.link, textDecoration: 'underline' },
+    { tag: tags.keyword, color: color('keyword'), fontStyle: font('keyword') },
+    { tag: tags.controlKeyword, color: color('keywordControl', 'keyword'), fontStyle: font('keywordControl', font('keyword')) },
+    { tag: tags.definitionKeyword, color: color('keywordType', 'keyword'), fontStyle: font('keywordType', font('keyword')) },
+    { tag: C_TOKEN_TAGS.keywordReturn, color: color('keywordReturn', 'keyword'), fontStyle: font('keywordReturn', font('keyword')) },
+    { tag: C_TOKEN_TAGS.keywordType, color: color('keywordType', 'keyword'), fontStyle: font('keywordType', font('keyword')) },
+    { tag: C_TOKEN_TAGS.keywordStorage, color: color('keywordStorage', 'keyword'), fontStyle: font('keywordStorage', font('keyword')) },
+    { tag: [tags.moduleKeyword, tags.operatorKeyword], color: color('keywordOperator', 'operator') },
+    { tag: tags.modifier, color: color('keywordStorage', 'keyword') },
+    { tag: tags.string, color: color('string') },
+    { tag: [tags.escape, tags.regexp], color: color('stringEscape', 'string') },
+    { tag: tags.comment, color: color('comment'), fontStyle: font('comment', 'italic') },
+    { tag: tags.number, color: color('number') },
+    { tag: tags.bool, color: color('boolean', 'constant') },
+    { tag: tags.atom, color: color('boolean', 'constant') },
+    { tag: tags.null, color: color('constantBuiltin', 'constant') },
+    { tag: C_TOKEN_TAGS.constantName, color: color('constant') },
+    { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: color('function') },
+    { tag: C_TOKEN_TAGS.callName, color: color('function') },
+    { tag: [tags.standard(tags.function(tags.variableName)), tags.standard(tags.variableName)], color: color('functionBuiltin', 'function') },
+    { tag: tags.macroName, color: color('macro', 'function') },
+    { tag: [tags.typeName, tags.className], color: color('type') },
+    { tag: C_TOKEN_TAGS.typeNameToken, color: color('type') },
+    { tag: tags.standard(tags.typeName), color: color('typeBuiltin', 'type') },
+    { tag: C_TOKEN_TAGS.builtinType, color: color('typeBuiltin', 'type') },
+    { tag: tags.operator, color: color('operator') },
+    { tag: tags.variableName, color: color('variable') },
+    { tag: tags.special(tags.variableName), color: color('variableBuiltin', 'variable') },
+    { tag: [tags.propertyName, tags.attributeName], color: color('property') },
+    { tag: C_TOKEN_TAGS.memberName, color: color('property') },
+    { tag: tags.labelName, color: color('label', 'keyword') },
+    { tag: tags.punctuation, color: color('punctuation', 'variable') },
+    { tag: tags.bracket, color: color('bracket', 'punctuation') },
+    { tag: tags.separator, color: color('separator', 'punctuation') },
+    { tag: tags.tagName, color: color('tag', 'keyword') },
+    { tag: tags.namespace, color: color('module', 'type') },
+    { tag: tags.meta, color: color('preproc', 'comment') },
+    { tag: tags.annotation, color: color('attribute', 'property') },
+    { tag: [tags.heading, tags.strong], color: color('heading', 'function'), fontWeight: 'bold' },
+    { tag: tags.link, color: color('link', 'function'), textDecoration: 'underline' },
   ]);
   return [ui, syntaxHighlighting(highlight)];
 }

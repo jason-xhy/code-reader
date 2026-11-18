@@ -130,6 +130,10 @@ export async function editorStatus() {
     const custom = await probeProgram(active.command);
     active.version = custom.version;
     active.fallback = !custom.available;
+  } else if (active.program === 'nvim') {
+    active.version = nvim.version;
+  } else if (active.program === 'vim') {
+    active.version = vim.version;
   }
   return {
     nvim,
