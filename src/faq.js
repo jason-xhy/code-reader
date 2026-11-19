@@ -1,6 +1,6 @@
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: FAQ 代码段识别与存储与 code-reader 强绑定
 // grill: 成品检索=skill 库无 code-reader FAQ 成品; 输入固定=源码文本+行号/解释结果; 步骤机械=括号或缩进分段+JSON 读写; 判读固定=块范围包含关系; 失效场景=构造不出（仅本应用）
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from './errors.js';
@@ -312,7 +312,12 @@ export function detectFunctionSegment(content, line) {
   return { lineStart: start + 1, lineEnd: endLine, symbol, kind: 'function' };
 }
 
-export async function recordFaq(repositoryId, { file, line, question, explanation, model, head, segment }) {
+export function segmentHash(content, segment) {
+  const lines = String(content || '').split('\n').slice(segment.lineStart - 1, segment.lineEnd);
+  return createHash('sha256').update(lines.join('\n')).digest('hex');
+}
+
+export async function recordFaq(repositoryId, { file, line, question, explanation, model, head, segment, content }) {
   const entries = await loadEntries(repositoryId);
   const now = new Date().toISOString();
   const normalized = String(question || '').trim();
@@ -334,8 +339,12 @@ export async function recordFaq(repositoryId, { file, line, question, explanatio
     details: explanation.details,
     summary: explanation.summary,
     specifications: explanation.specifications,
+    evidence: explanation.evidence || [],
+    nextSteps: explanation.nextSteps || [],
+    animation: explanation.animation || null,
     model,
     head,
+    contentHash: typeof content === 'string' ? segmentHash(content, segment) : '',
     updatedAt: now,
   };
   let entry;
@@ -351,11 +360,22 @@ export async function recordFaq(repositoryId, { file, line, question, explanatio
   return entry;
 }
 
-export async function findFaq(repositoryId, file, line) {
+export async function findFaq(repositoryId, file, line, { content, head } = {}) {
   const entries = await loadEntries(repositoryId);
+  const segment = typeof content === 'string' ? detectSegment(content, line) : null;
+  const currentHash = segment ? segmentHash(content, segment) : '';
   return entries
     .filter((entry) => entry.file === file && entry.lineStart <= line && entry.lineEnd >= line)
-    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    .map((entry) => {
+      const headChanged = Boolean(entry.head && head && entry.head !== head);
+      const contentChanged = Boolean(entry.contentHash && currentHash && entry.contentHash !== currentHash);
+      return {
+        ...entry,
+        stale: headChanged || contentChanged,
+        staleReason: contentChanged ? '代码内容已变化' : headChanged ? 'HEAD 已变化' : '',
+      };
+    })
+    .sort((a, b) => Number(a.stale) - Number(b.stale) || String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
 export async function deleteFaq(repositoryId, id) {

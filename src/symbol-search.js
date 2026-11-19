@@ -76,18 +76,8 @@ async function gitGrepDefinitions(root, identifier) {
   }
 }
 
-export async function searchSymbolDefinitions({ root, filePath, line, character, content }) {
-  let text = content;
-  if (typeof text !== 'string') {
-    try {
-      text = (await readSource(root, filePath)).content;
-    } catch {
-      return [];
-    }
-  }
-  const identifier = wordAt(text, line, character);
+export async function searchDefinitionsForIdentifier({ root, identifier, filePath }) {
   if (!identifier || identifier.length < 2) return [];
-  if (!isDefinitionTarget(text.split('\n')[line - 1] || '', identifier)) return [];
   const lines = await gitGrepDefinitions(root, identifier);
   const results = [];
   const seen = new Set();
@@ -117,4 +107,19 @@ export async function searchSymbolDefinitions({ root, filePath, line, character,
       line: candidateLine,
       character: column,
     }));
+}
+
+export async function searchSymbolDefinitions({ root, filePath, line, character, content }) {
+  let text = content;
+  if (typeof text !== 'string') {
+    try {
+      text = (await readSource(root, filePath)).content;
+    } catch {
+      return [];
+    }
+  }
+  const identifier = wordAt(text, line, character);
+  if (!identifier || identifier.length < 2) return [];
+  if (!isDefinitionTarget(text.split('\n')[line - 1] || '', identifier)) return [];
+  return searchDefinitionsForIdentifier({ root, identifier, filePath });
 }

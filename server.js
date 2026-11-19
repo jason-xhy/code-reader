@@ -8,6 +8,7 @@ import { AppError } from './src/errors.js';
 import {
   checkoutBranch,
   commitDetails,
+  functionEvolution,
   functionHistory,
   lineHistory,
   listBranches,
@@ -211,7 +212,15 @@ async function handleApi(request, response, url) {
       const filePath = url.searchParams.get('path') || '';
       if (!filePath || filePath.includes('\0')) throw new AppError('文件路径无效', 400, 'INVALID_PATH');
       const line = integerParam(url.searchParams.get('line'));
-      sendJson(response, 200, { path: filePath, line, entries: await findFaq(repository.id, filePath, line) });
+      let content = '';
+      let head = '';
+      try {
+        content = (await readSource(repository.root, filePath)).content;
+        head = (await runGit(['rev-parse', '--short', 'HEAD'], { cwd: repository.root })).trim();
+      } catch (error) {
+        console.error('[faq] 过期检测失败：', error?.message || error);
+      }
+      sendJson(response, 200, { path: filePath, line, entries: await findFaq(repository.id, filePath, line, { content, head }) });
       return;
     }
     if (request.method === 'POST' && faqMatch[2] === 'delete') {
@@ -283,6 +292,10 @@ async function handleApi(request, response, url) {
   if (action === 'function-history' && request.method === 'GET') {
     const filePath = url.searchParams.get('path') || '';
     const line = integerParam(url.searchParams.get('line'));
+    if (url.searchParams.get('deep') === '1') {
+      sendJson(response, 200, await functionEvolution(repository.root, filePath, line));
+      return;
+    }
     sendJson(response, 200, await functionHistory(repository.root, filePath, line));
     return;
   }
@@ -308,6 +321,7 @@ async function handleApi(request, response, url) {
         model: explanation.model,
         head,
         segment,
+        content: source.content,
       });
       faq = { id: entry.id, lineStart: entry.lineStart, lineEnd: entry.lineEnd, symbol: entry.symbol };
     } catch (error) {
@@ -341,7 +355,7 @@ async function serveStatic(response, pathname) {
     'content-type': contentTypes[path.extname(filePath)] || 'application/octet-stream',
     'cache-control': 'no-cache',
     'x-content-type-options': 'nosniff',
-    'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
   });
   response.end(body);
 }

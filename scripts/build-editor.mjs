@@ -28,3 +28,16 @@ await build({
 await mkdir('public/vendor/xterm', { recursive: true });
 await copyFile('node_modules/@xterm/xterm/css/xterm.css', 'public/vendor/xterm/xterm.css');
 console.log('terminal bundle built: public/vendor/xterm/terminal.bundle.js');
+
+await build({
+  entryPoints: ['web-src/animation.js'],
+  bundle: true,
+  format: 'iife',
+  globalName: 'CodeReaderAnimationBundle',
+  minify: true,
+  sourcemap: false,
+  legalComments: 'none',
+  target: ['chrome100', 'firefox100', 'safari15'],
+  outfile: 'public/vendor/three/animation.bundle.js',
+});
+console.log('animation bundle built: public/vendor/three/animation.bundle.js');

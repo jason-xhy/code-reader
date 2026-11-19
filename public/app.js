@@ -1,6 +1,7 @@
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 页面状态机与 code-reader API 强绑定
 // grill: 成品检索=skill 库无 code-reader 前端成品; 输入固定=固定 DOM id 与 API 响应; 步骤机械=按仓库/分支/同步事件渲染; 判读固定=API JSON 结果; 失效场景=构造不出（仅本应用）
 import { createEditor, THEMES } from './editor.js';
+import { createAnimationHtml } from './animation-html.js';
 
 const $ = (selector) => document.querySelector(selector);
 // v2：本地主题成为默认选项后重置旧版本保存的配色选择，避免历史
@@ -92,6 +93,12 @@ const elements = {
   questionError: $('#question-error'),
   questionCancel: $('#question-cancel'),
   questionSubmit: $('#question-submit'),
+  questionPresets: $('#question-presets'),
+  readingTrail: $('#reading-trail'),
+  animationOverlay: $('#animation-overlay'),
+  animationFrame: $('#animation-frame'),
+  animationDownload: $('#animation-download'),
+  animationClose: $('#animation-close'),
   historyAnchor: $('#history-anchor'),
   historyContent: $('#history-content'),
   explanationAnchor: $('#explanation-anchor'),
@@ -152,7 +159,12 @@ const state = {
   editorMode: 'editor',
   editorEnv: null,
   editorProfile: null,
+  readingTrail: [],
+  animationOpen: false,
+  animationRuntime: null,
 };
+
+let animationUrls = null;
 
 const savedTheme = localStorage.getItem(THEME_KEY);
 if (savedTheme && (savedTheme === 'local' || THEMES.some((theme) => theme.id === savedTheme))) {
@@ -1318,6 +1330,7 @@ async function selectFile(filePath, reveal = null) {
     state.faqEntries = [];
     state.faqKey = null;
     closeQuestion();
+    closeAnimation();
     renderTree();
     renderHistory();
     renderExplanation();
@@ -1338,6 +1351,7 @@ async function selectFile(filePath, reveal = null) {
     if (reveal) editor.revealPosition(reveal.line, reveal.character);
     const line = reveal?.line || 1;
     state.activeLine = line;
+    pushReadingTrail({ path: filePath, line });
     fetchFunctionHistory(line);
     fetchFaq(line);
     scheduleHistoryTouch();
@@ -1595,8 +1609,26 @@ function renderFaq() {
     const time = document.createElement('span');
     time.textContent = relativeTime(entry.updatedAt);
     meta.append(symbol, head, time);
+    if (entry.stale) {
+      const badge = document.createElement('span');
+      badge.className = 'faq-stale';
+      badge.textContent = `已过期${entry.staleReason ? `：${entry.staleReason}` : ''}`;
+      meta.append(badge);
+    }
     const actions = document.createElement('div');
     actions.className = 'faq-actions';
+    if (entry.stale) {
+      const reask = document.createElement('button');
+      reask.type = 'button';
+      reask.className = 'faq-reask';
+      reask.textContent = '按当前代码重问';
+      reask.addEventListener('click', () => {
+        openQuestion();
+        elements.questionInput.value = entry.question;
+        elements.questionInput.focus();
+      });
+      actions.append(reask);
+    }
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'faq-delete';
@@ -1639,7 +1671,9 @@ function renderHistory() {
   elements.historyAnchor.textContent = `${history.path}:${range}${history.symbol ? ` · ${history.symbol}` : ''}`;
   if (history.status === 'loading') {
     elements.historyContent.className = 'insight-content empty-insight loading';
-    elements.historyContent.textContent = '正在查询函数级 Git 历史…';
+    elements.historyContent.textContent = history.deep
+      ? '正在执行 git log -L 追踪函数演变（大仓库可能需要较长时间）…'
+      : '正在查询函数级 Git 历史…';
     return;
   }
   if (history.status === 'error') {
@@ -1676,6 +1710,43 @@ function renderHistory() {
     list.append(item);
   }
   elements.historyContent.append(list);
+  const actions = document.createElement('div');
+  actions.className = 'history-actions';
+  if (history.mode === 'evolution') {
+    const mode = document.createElement('span');
+    mode.className = 'history-mode';
+    mode.textContent = '深层演变模式（git log -L 跨提交追踪函数体）';
+    actions.append(mode);
+  } else {
+    const deep = document.createElement('button');
+    deep.type = 'button';
+    deep.className = 'button small';
+    deep.textContent = '深层演变（git log -L，较慢）';
+    deep.title = '追踪函数体在历次提交中的修改，而不是当前代码行的最新改动';
+    deep.addEventListener('click', () => fetchFunctionHistoryDeep(state.activeLine || history.line));
+    actions.append(deep);
+  }
+  elements.historyContent.append(actions);
+}
+
+async function fetchFunctionHistoryDeep(line) {
+  if (!state.repository || !state.currentFile || !Number.isInteger(line)) return;
+  const filePath = state.currentFile;
+  state.historyController?.abort();
+  const controller = new AbortController();
+  state.historyController = controller;
+  state.history = { path: filePath, line, status: 'loading', deep: true, commits: [] };
+  renderHistory();
+  try {
+    const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/function-history?path=${encodeURIComponent(filePath)}&line=${line}&deep=1`, { signal: controller.signal });
+    if (state.currentFile !== filePath || controller.signal.aborted) return;
+    state.history = { path: filePath, line, status: 'done', ...data };
+    renderHistory();
+  } catch (error) {
+    if (error.name === 'AbortError' || state.currentFile !== filePath) return;
+    state.history = { path: filePath, line, status: 'error', message: error.message, commits: [] };
+    renderHistory();
+  }
 }
 
 function openQuestion() {
@@ -1800,7 +1871,8 @@ function renderSources(card, sources) {
     const list = document.createElement('ul');
     for (const hit of local) {
       const item = document.createElement('li');
-      item.textContent = `本地文档：${hit.source}（相关度 ${hit.score}）`;
+      const location = [hit.section, hit.page ? `第 ${hit.page} 页` : ''].filter(Boolean).join(' · ');
+      item.textContent = `本地文档：${hit.source}${location ? `（${location}）` : ''}（相关度 ${hit.score}）`;
       list.append(item);
     }
     box.append(list);
@@ -1874,6 +1946,47 @@ function renderExplanation() {
     details.append(item);
   }
   card.append(details);
+  if (explanation.explanation.evidence?.length) {
+    appendHeading(card, '证据');
+    const kindLabels = { code: '代码', documentation: '文档', inference: '推断' };
+    for (const item of explanation.explanation.evidence) {
+      const evidenceCard = document.createElement('div');
+      evidenceCard.className = `evidence-card evidence-${item.kind}`;
+      const head = document.createElement('div');
+      head.className = 'evidence-head';
+      const badge = document.createElement('span');
+      badge.className = 'evidence-kind';
+      badge.textContent = kindLabels[item.kind] || '推断';
+      head.append(badge);
+      if (item.kind === 'code' && item.file && item.lineStart && state.fileSet.has(item.file)) {
+        const jump = document.createElement('button');
+        jump.type = 'button';
+        jump.className = 'evidence-loc';
+        jump.textContent = `${item.file}:${item.lineStart}${item.lineEnd && item.lineEnd !== item.lineStart ? `-${item.lineEnd}` : ''}`;
+        jump.addEventListener('click', () => jumpTo({ path: item.file, line: item.lineStart, character: 0 }));
+        head.append(jump);
+      } else if (item.kind === 'documentation' && (item.source || item.section)) {
+        const location = document.createElement('span');
+        location.className = 'evidence-loc-static';
+        location.textContent = [item.source, item.section, item.page ? `第 ${item.page} 页` : ''].filter(Boolean).join(' · ');
+        head.append(location);
+      }
+      const claim = document.createElement('p');
+      claim.textContent = item.claim;
+      evidenceCard.append(head, claim);
+      if (item.excerpt) {
+        const excerpt = document.createElement('details');
+        excerpt.className = 'evidence-excerpt';
+        const excerptSummary = document.createElement('summary');
+        excerptSummary.textContent = '查看原文摘录';
+        const pre = document.createElement('pre');
+        pre.textContent = item.excerpt;
+        excerpt.append(excerptSummary, pre);
+        evidenceCard.append(excerpt);
+      }
+      card.append(evidenceCard);
+    }
+  }
   if (explanation.explanation.specifications.length) {
     appendHeading(card, '硬件协议规范依据');
     for (const specification of explanation.explanation.specifications) {
@@ -1884,7 +1997,8 @@ function renderExplanation() {
       title.textContent = specification.name;
       const meta = document.createElement('div');
       meta.className = 'spec-meta';
-      meta.textContent = `版本：${specification.version || '未确认'} · 章节：${specification.section} · ${specification.verified ? '模型标记已核实' : '未核实'}`;
+      const location = [specification.source, specification.section, specification.page ? `第 ${specification.page} 页` : ''].filter(Boolean).join(' · ');
+      meta.textContent = `版本：${specification.version || '未确认'} · ${location || `章节：${specification.section}`} · ${specification.verified ? '已在本地文档中核实' : '未核实'}`;
       const relevance = document.createElement('div');
       relevance.textContent = specification.relevance;
       spec.append(title, meta, relevance);
@@ -1895,12 +2009,149 @@ function renderExplanation() {
   const summary = document.createElement('p');
   summary.textContent = explanation.explanation.summary;
   card.append(summary);
+  if (explanation.explanation.nextSteps?.length) {
+    appendHeading(card, '建议继续阅读');
+    const nextList = document.createElement('div');
+    nextList.className = 'next-steps';
+    for (const step of explanation.explanation.nextSteps) {
+      if (!state.fileSet.has(step.file)) continue;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'next-step';
+      const location = document.createElement('span');
+      location.className = 'next-step-loc';
+      location.textContent = `${step.file}:${step.line}`;
+      const reason = document.createElement('span');
+      reason.className = 'next-step-reason';
+      reason.textContent = step.reason;
+      button.append(location, reason);
+      button.addEventListener('click', () => jumpTo({ path: step.file, line: step.line, character: 0 }));
+      nextList.append(button);
+    }
+    if (nextList.children.length) card.append(nextList);
+  }
+  if (explanation.explanation.animation) {
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'button primary animation-open';
+    open.textContent = '查看 3D 动画演示';
+    open.addEventListener('click', () => openAnimation(explanation.explanation.animation));
+    card.append(open);
+  }
   renderSources(card, explanation.sources);
   const note = document.createElement('p');
   note.className = 'model-note';
   note.textContent = `模型：${explanation.model}。内容由模型生成；涉及硬件规范时，请与官方规范原文复核。`;
   card.append(note);
   elements.explanationContent.append(card);
+}
+
+const QUESTION_PRESETS = [
+  { label: '函数目的', text: '这个函数的目的是什么？请结合调用方说明它在整体流程中的角色。' },
+  { label: '数据流', text: '梳理当前函数的数据流：输入从哪里来，经过哪些变换，输出到哪里。' },
+  { label: '设计原因', text: '这段代码为什么这样设计？请结合 Git 历史和上下文解释取舍。' },
+  { label: '规范依据', text: '这段代码遵循了哪些规范/协议要求？请给出具体章节依据。' },
+  { label: '3D 动画', text: '请用 Three.js 3D 动画解释当前函数的执行步骤，以及代码如何按照规范执行。' },
+];
+
+function renderQuestionPresets() {
+  elements.questionPresets.replaceChildren();
+  for (const preset of QUESTION_PRESETS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'preset-chip';
+    button.textContent = preset.label;
+    button.title = preset.text;
+    button.addEventListener('click', () => {
+      elements.questionInput.value = preset.text;
+      elements.questionInput.focus();
+    });
+    elements.questionPresets.append(button);
+  }
+}
+
+function pushReadingTrail(location) {
+  if (!location?.path) return;
+  const entry = { path: location.path, line: location.line || 1 };
+  const existing = state.readingTrail.findIndex((item) => item.path === entry.path && item.line === entry.line);
+  if (existing >= 0) state.readingTrail.splice(existing, 1);
+  state.readingTrail.push(entry);
+  if (state.readingTrail.length > 8) state.readingTrail.shift();
+  renderReadingTrail();
+}
+
+function renderReadingTrail() {
+  const trail = state.readingTrail;
+  elements.readingTrail.replaceChildren();
+  elements.readingTrail.hidden = !trail.length;
+  if (!trail.length) return;
+  const label = document.createElement('span');
+  label.className = 'trail-label';
+  label.textContent = '阅读路径';
+  elements.readingTrail.append(label);
+  trail.forEach((location, index) => {
+    if (index > 0) {
+      const separator = document.createElement('span');
+      separator.className = 'trail-sep';
+      separator.textContent = '→';
+      elements.readingTrail.append(separator);
+    }
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'trail-chip';
+    if (location.path === state.currentFile && location.line === state.activeLine) chip.classList.add('current');
+    chip.textContent = `${location.path.split('/').pop()}:${location.line}`;
+    chip.title = `${location.path}:${location.line}`;
+    chip.addEventListener('click', () => {
+      jumpTo({ path: location.path, line: location.line, character: 0 });
+    });
+    elements.readingTrail.append(chip);
+  });
+}
+
+function closeAnimationUrls() {
+  if (!animationUrls) return;
+  URL.revokeObjectURL(animationUrls.previewUrl);
+  URL.revokeObjectURL(animationUrls.offlineUrl);
+  animationUrls = null;
+}
+
+function closeAnimation() {
+  if (!state.animationOpen && !animationUrls) return;
+  state.animationOpen = false;
+  elements.animationOverlay.hidden = true;
+  elements.animationFrame.src = 'about:blank';
+  elements.animationDownload.removeAttribute('href');
+  closeAnimationUrls();
+}
+
+async function openAnimation(animation) {
+  if (!animation) return;
+  state.animationOpen = true;
+  elements.animationOverlay.hidden = false;
+  elements.animationFrame.src = 'about:blank';
+  elements.animationDownload.removeAttribute('href');
+  try {
+    if (!state.animationRuntime) {
+      const response = await fetch('/vendor/three/animation.bundle.js');
+      if (!response.ok) throw new Error('动画运行时缺失，请先执行 npm run build:vendor');
+      state.animationRuntime = await response.text();
+    }
+    closeAnimationUrls();
+    const previewHtml = createAnimationHtml(animation, '', {
+      runtimeUrl: new URL('/vendor/three/animation.bundle.js', window.location.origin).href,
+    });
+    const offlineHtml = createAnimationHtml(animation, state.animationRuntime);
+    const previewUrl = URL.createObjectURL(new Blob([previewHtml], { type: 'text/html' }));
+    const offlineUrl = URL.createObjectURL(new Blob([offlineHtml], { type: 'text/html' }));
+    animationUrls = { previewUrl, offlineUrl };
+    elements.animationFrame.src = previewUrl;
+    elements.animationDownload.href = offlineUrl;
+    elements.animationDownload.download = `${(animation.title || 'code-animation').replace(/[\\/:*?"<>|]/g, '_')}.html`;
+  } catch (error) {
+    closeAnimation();
+    showNotice(`动画加载失败：${error.message}`, { error: true });
+  }
 }
 
 async function jumpTo(location, pushCurrent = true) {
@@ -1918,6 +2169,7 @@ async function jumpTo(location, pushCurrent = true) {
     state.activeLine = location.line;
     fetchFunctionHistory(location.line);
   }
+  pushReadingTrail(location);
 }
 
 async function gotoDefinition() {
@@ -2174,6 +2426,8 @@ window.__ts = {
         : null,
       editor: editor?.snapshot() || null,
       jumpStackDepth: jumpStack.length,
+      readingTrail: state.readingTrail,
+      animationOpen: state.animationOpen,
     };
   },
   // 自动化/调试入口：直接打开文件位置与触发引用查询。
@@ -2218,6 +2472,10 @@ elements.nvimKeymapClose.addEventListener('click', () => elements.nvimKeymapDial
 elements.commitOverlayClose.addEventListener('click', closeCommitOverlay);
 elements.commitOverlay.addEventListener('click', (event) => {
   if (event.target === elements.commitOverlay) closeCommitOverlay();
+});
+elements.animationClose.addEventListener('click', closeAnimation);
+elements.animationOverlay.addEventListener('click', (event) => {
+  if (event.target === elements.animationOverlay) closeAnimation();
 });
 elements.editorEnvSettings.addEventListener('click', async () => {
   elements.editorEnvDialog.showModal();
@@ -2486,6 +2744,11 @@ document.addEventListener('keydown', (event) => {
 }, true);
 
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.animationOpen) {
+    event.preventDefault();
+    closeAnimation();
+    return;
+  }
   if (event.key === 'Escape' && !elements.commitOverlay.hidden) {
     event.preventDefault();
     closeCommitOverlay();
@@ -2522,6 +2785,8 @@ renderHistory();
 renderExplanation();
 renderFaq();
 renderLspState();
+renderQuestionPresets();
+renderReadingTrail();
 loadLayout();
 applyLayout();
 initSplitter('left');

@@ -167,22 +167,40 @@ function sampleChunks(chunks, limit) {
   return sampled;
 }
 
-function chunkText(text, source, rel, root) {
+function paragraphHeading(value) {
+  const lines = value.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return '';
+  const markdown = /^#{1,6}\s+(.+)$/.exec(lines[0]);
+  if (markdown) return markdown[1].trim().slice(0, 300);
+  if (lines.length >= 2 && /^(?:=+|-+|~+|\^+)$/.test(lines[1]) && lines[1].length >= Math.min(3, lines[0].length)) {
+    return lines[0].slice(0, 300);
+  }
+  const numbered = /^((?:\d+\.)+\d*)\s+(.+)$/.exec(lines[0]);
+  return numbered ? `${numbered[1]} ${numbered[2]}`.slice(0, 300) : '';
+}
+
+function chunkText(text, source, rel, root, { page = null } = {}) {
   const normalized = text.replace(/\r\n/g, '\n').replace(/\u0000/g, '');
   const chunks = [];
   let buffer = '';
+  let currentSection = '';
   const flush = () => {
     const value = buffer.trim();
-    if (value.length > 40) chunks.push({ source, rel, root, text: value.slice(0, CHUNK_SIZE * 2) });
+    if (value.length > 40) chunks.push({ source, rel, root, section: currentSection, page, text: value.slice(0, CHUNK_SIZE * 2) });
     buffer = '';
   };
   for (const paragraph of normalized.split(/\n\s*\n/)) {
     const value = paragraph.trim();
     if (!value) continue;
+    const heading = paragraphHeading(value);
+    if (heading) {
+      flush();
+      currentSection = heading;
+    }
     if (value.length > CHUNK_SIZE * 1.4) {
       flush();
       for (let index = 0; index < value.length; index += CHUNK_SIZE) {
-        chunks.push({ source, rel, root, text: value.slice(index, index + CHUNK_SIZE) });
+        chunks.push({ source, rel, root, section: currentSection, page, text: value.slice(index, index + CHUNK_SIZE) });
       }
       continue;
     }
@@ -191,6 +209,15 @@ function chunkText(text, source, rel, root) {
   }
   flush();
   return sampleChunks(chunks, MAX_CHUNKS_PER_FILE);
+}
+
+function chunkDocument(text, source, rel, root, extension) {
+  if (extension !== '.pdf') return chunkText(text, source, rel, root);
+  const pages = String(text || '').split('\f');
+  return sampleChunks(
+    pages.flatMap((pageText, index) => chunkText(pageText, source, rel, root, { page: index + 1 })),
+    MAX_CHUNKS_PER_FILE,
+  );
 }
 
 function tokenize(text) {
@@ -219,7 +246,7 @@ async function buildDirectoryIndex(directory) {
     const text = await readDocument(file.path, file.extension);
     if (!text) continue;
     const rel = path.relative(directory, file.path);
-    chunks.push(...chunkText(text, file.path, rel, directory));
+    chunks.push(...chunkDocument(text, file.path, rel, directory, file.extension));
   }
   for (const chunk of chunks) chunk.tokens = tokenize(chunk.text);
   const entry = { builtAt: Date.now(), files: files.length, chunks };
@@ -297,6 +324,8 @@ export async function searchDocumentation({ repositoryRoot, query }) {
     source: `${path.basename(hit.root)}/${hit.rel}`,
     file: hit.source,
     root: hit.root,
+    section: hit.section || '',
+    page: hit.page || null,
     text: hit.text,
     score: hit.score,
   }));

@@ -11,6 +11,9 @@ import { detectSegment } from '../src/faq.js';
 import { detectFunctionSegment } from '../src/faq.js';
 import { parseGoogleResults } from '../src/websearch.js';
 import { searchSymbolDefinitions, wordAt } from '../src/symbol-search.js';
+import { buildUnderstandingContext } from '../src/understanding.js';
+import { parseAnimation, wantsAnimation } from '../src/animation.js';
+import { createAnimationHtml } from '../public/animation-html.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const base = 'http://127.0.0.1:8799';
@@ -130,10 +133,39 @@ const stub = createServer(async (request, response) => {
     messages = [];
   }
   lastUserContent = messages.filter((message) => message.role === 'user').map((message) => String(message.content || '')).join('\n');
+  const animationRequested = lastUserContent.includes('"animationRequested":true');
+  const payload = {
+    overview: '概览',
+    details: ['细节一', '细节二'],
+    summary: '总结',
+    evidence: [
+      { claim: '函数直接写入 event->value', kind: 'code', file: 'base.txt', lineStart: 1 },
+      { claim: '设计意图属于推断', kind: 'inference' },
+    ],
+    nextSteps: [{ file: 'base.txt', line: 1, reason: '继续阅读调用方' }],
+    specifications: [],
+  };
+  if (animationRequested) {
+    payload.animation = {
+      title: 'demo_handle 执行演示',
+      summary: '演示事件处理流程',
+      nodes: [
+        { id: 'entry', label: 'demo_entry 调用', kind: 'code' },
+        { id: 'handler', label: 'demo_handle', kind: 'code' },
+        { id: 'spec', label: '规范约束', kind: 'spec' },
+      ],
+      steps: [
+        { title: '进入函数', detail: 'demo_handle 接收事件指针', node: 'handler', from: 'entry', to: 'handler', file: 'sample.c', lineStart: 3, lineEnd: 6 },
+        { title: '写入字段', detail: 'event->value 赋值为 1', node: 'handler', lineStart: 5 },
+        { title: '符合规范', detail: '写事件前结构体已初始化', node: 'spec', from: 'handler', to: 'spec' },
+      ],
+    };
+  }
+  const validJson = `先给出结论。\n\`\`\`json\n${JSON.stringify(payload)}\n\`\`\``;
   const content = lastUserContent.includes('TRIGGER_BAD_JSON')
     ? '{"overview": "缺少后续字段"'
-    : messages.length >= 4
-      ? '先给出结论。\n```json\n{"overview":"概览","details":["细节一","细节二"],"summary":"总结","specifications":[]}\n```'
+    : messages.length >= 4 || animationRequested
+      ? validJson
       : '抱歉，我无法按要求输出 JSON。';
   response.writeHead(200, { 'content-type': 'application/json' });
   response.end(JSON.stringify({ choices: [{ message: { content } }] }));
@@ -378,6 +410,68 @@ try {
   const functionHistoryCached = await api('GET', `${repoBase}/function-history?path=sample.c&line=4`);
   assert(functionHistoryCached.data.cached === true && functionHistoryCached.data.commits.length === 1, '函数级历史按函数范围命中缓存');
 
+  const deepHistory = await api('GET', `${repoBase}/function-history?path=sample.c&line=5&deep=1`);
+  assert(
+    deepHistory.status === 200
+    && deepHistory.data.mode === 'evolution'
+    && deepHistory.data.symbol === 'demo_handle'
+    && deepHistory.data.commits.some((entry) => entry.subject === 'sample-symbols'),
+    '深层函数演变（git log -L）返回提交历史',
+    JSON.stringify(deepHistory.data).slice(0, 300),
+  );
+
+  const understanding = await buildUnderstandingContext({ repositoryRoot: work, filePath: 'sample.c', source: { content: sampleContent }, line: 11 });
+  assert(
+    understanding.scope.symbol === 'demo_entry' && understanding.start === 8 && understanding.end === 12,
+    '理解上下文定位当前函数范围',
+    JSON.stringify(understanding.scope),
+  );
+  assert(
+    understanding.relatedDefinitions.some((item) => item.identifier === 'demo_handle' && item.file === 'sample.c' && item.line === 3),
+    '理解上下文带上下调用的相关函数定义',
+    JSON.stringify(understanding.relatedDefinitions),
+  );
+  assert(understanding.text.includes('demo_handle(&event);') && understanding.queryText.includes('demo_handle'), '理解上下文包含调用行与检索词');
+
+  assert(wantsAnimation('请用 Three.js 3D 动画解释当前函数') === true, '动画触发词：3D 动画');
+  assert(wantsAnimation('用动画演示数据流') === true, '动画触发词：动画');
+  assert(wantsAnimation('不需要动画，只要文字说明') === false, '动画触发词：否定形式不触发');
+  assert(wantsAnimation('这个函数做什么？') === false, '普通问题不触发动画');
+
+  const validAnimation = parseAnimation({
+    title: 'T', summary: 'S',
+    nodes: [
+      { id: 'n1', label: '入口', kind: 'code' },
+      { id: 'n2', label: '数据', kind: 'evil' },
+    ],
+    steps: [
+      { title: 's1', detail: 'd1', node: 'n1' },
+      { title: 's2', detail: 'd2', node: 'n2', from: 'n1', to: 'n2', lineStart: 3 },
+      { title: 'bad', detail: 'd3', node: 'missing' },
+    ],
+  });
+  assert(
+    validAnimation?.steps.length === 2
+    && validAnimation.nodes[1].kind === 'code'
+    && validAnimation.steps[1].lineStart === 3
+    && validAnimation.steps[1].lineEnd === 3,
+    'parseAnimation 过滤非法引用并回落节点类型',
+    JSON.stringify(validAnimation),
+  );
+  assert(parseAnimation({ nodes: [{ id: 'a', label: 'A' }], steps: [] }) === null, 'parseAnimation 拒绝空步骤');
+  assert(parseAnimation(null) === null, 'parseAnimation 拒绝非对象输入');
+
+  const offlineHtml = createAnimationHtml(validAnimation, 'window.__RUNTIME__=true;');
+  assert(!offlineHtml.includes('<script src=') && offlineHtml.includes('window.__RUNTIME__=true;'), '离线动画 HTML 内联运行时且无外链');
+  assert(offlineHtml.includes('type="application/json"') && offlineHtml.includes('.anim-fallback[hidden]'), '动画 HTML 使用 JSON 数据块且含 fallback 隐藏规则');
+  const previewHtml = createAnimationHtml(validAnimation, '', { runtimeUrl: 'http://127.0.0.1:8799/vendor/three/animation.bundle.js' });
+  assert(
+    previewHtml.includes('<script src="http://127.0.0.1:8799/vendor/three/animation.bundle.js"></script>') && !previewHtml.includes('__RUNTIME__'),
+    '预览动画 HTML 使用同源外部运行时',
+  );
+  const escapedHtml = createAnimationHtml({ ...validAnimation, title: '</script><script>alert(1)</script>' }, 'x</script>');
+  assert(escapedHtml.includes('<\\/script') && !escapedHtml.includes('</script><script>alert(1)</script>'), '动画 HTML 转义 </script> 防注入');
+
   const referenceContext = await api('GET', `${repoBase}/context?path=sample.c&line=5&radius=2`);
   assert(
     referenceContext.status === 200
@@ -407,6 +501,7 @@ try {
   const docsExplain = await api('POST', `${repoBase}/explain`, { path: 'base.txt', line: 1, question: 'TRB_RING_MAGIC_123 在规范里怎么要求？' });
   assert(docsExplain.status === 200 && docsExplain.data.sources?.local?.length > 0, '本地 docs 命中并返回来源', JSON.stringify(docsExplain.data.sources));
   assert(lastUserContent.includes('localDocumentation') && lastUserContent.includes('TRB_RING_MAGIC_123'), 'docs 片段进入 LLM 请求');
+  assert(docsExplain.data.sources.local.some((hit) => hit.section === 'XHCI'), '本地文档命中携带章节标题', JSON.stringify(docsExplain.data.sources.local));
   writeFileSync(path.join(docsDir, 'demo-spec.md'), 'demo_handle SPEC_MAGIC transfers events between endpoints and rings.\n');
   writeFileSync(path.join(docsDir, 'path-spec.md'), 'base.txt SPEC_MAGIC documents the base file.\n');
   await api('POST', '/api/docs/config', { directories: [docsDir], webEnabled: false });
@@ -425,6 +520,28 @@ try {
   const docsStats = await api('GET', '/api/docs/config');
   assert(docsStats.status === 200 && docsStats.data.config.directories.length === 1, 'docs 配置回读一致');
   await api('POST', '/api/docs/config', { directories: [], webEnabled: false });
+
+  const animExplain = await api('POST', `${repoBase}/explain`, { path: 'sample.c', line: 5, question: '请用 Three.js 3D 动画解释当前函数的执行步骤，以及代码如何按照规范执行。' });
+  assert(
+    animExplain.status === 200 && animExplain.data.explanation?.animation?.steps?.length === 3,
+    '明确要求动画时返回受限动画 JSON（3 步）',
+    JSON.stringify(animExplain.data.explanation?.animation),
+  );
+  assert(animExplain.data.explanation.evidence?.length > 0 && animExplain.data.explanation.nextSteps?.length > 0, '解释包含证据与建议下一步');
+  assert(animExplain.data.scope?.symbol === 'demo_handle' && animExplain.data.relatedDefinitions !== undefined, '解释返回函数范围与相关定义', JSON.stringify(animExplain.data.scope));
+  const plainExplain = await api('POST', `${repoBase}/explain`, { path: 'sample.c', line: 5, question: '这个函数做什么？' });
+  assert(plainExplain.status === 200 && plainExplain.data.explanation?.animation === null, '普通问题不生成动画');
+
+  execFileSync('bash', ['-c', "printf '\\nlocal-change\\n' >> base.txt"], { cwd: work });
+  const staleFaq = await api('GET', `${repoBase}/faq?path=base.txt&line=1`);
+  assert(
+    staleFaq.data.entries.some((entry) => entry.stale === true && entry.staleReason === '代码内容已变化'),
+    'FAQ 检测未提交的代码内容变化',
+    JSON.stringify(staleFaq.data.entries.map((entry) => [entry.stale, entry.staleReason])),
+  );
+  git(work, 'checkout', '--', 'base.txt');
+  const freshFaq = await api('GET', `${repoBase}/faq?path=base.txt&line=1`);
+  assert(freshFaq.data.entries.some((entry) => entry.stale === false), '代码恢复后 FAQ 回到新鲜状态');
 
   const badExplain = await api('POST', `${repoBase}/explain`, { path: 'base.txt', line: 1, question: 'TRIGGER_BAD_JSON 请输出' });
   assert(badExplain.status === 502, 'LLM 解析失败返回 502', `status=${badExplain.status}`);
@@ -456,6 +573,8 @@ try {
   const page = await fetch(base + '/');
   const html = await page.text();
   assert(page.status === 200 && html.includes('branch-select') && html.includes('sync-button'), '首页包含分支下拉与更新按钮');
+  assert((page.headers.get('content-security-policy') || '').includes('frame-src blob:'), 'CSP 允许 blob: 动画预览且不放开 script-src', page.headers.get('content-security-policy'));
+  assert(html.includes('question-presets') && html.includes('reading-trail') && html.includes('animation-overlay') && html.includes('sandbox="allow-scripts"'), '首页包含预设问题/阅读路径/动画沙箱容器');
   assert(html.includes('theme-select') && html.includes('docs-dialog') && html.includes('history-menu') && html.includes('faq-section'), '首页包含主题/知识库/历史/FAQ 容器');
   const bundle = await fetch(base + '/vendor/cm6/editor.bundle.js');
   const bundleText = await bundle.text();
@@ -466,6 +585,10 @@ try {
   assert(editorSource.includes("Vim.defineEx('vi'") && editorSource.includes('readerJumpBack'), '编辑器注册 :vi 与应用级 Ctrl-o 跳转');
   const appSource = readFileSync(path.join(repoRoot, 'public/app.js'), 'utf8');
   assert(appSource.includes('function-history?') && appSource.includes('renderFilteredTree') && appSource.includes('function focusTree'), '前端含函数历史/过滤/文件树聚焦');
+  assert(
+    appSource.includes('createAnimationHtml') && appSource.includes('fetchFunctionHistoryDeep') && appSource.includes('pushReadingTrail') && appSource.includes('按当前代码重问'),
+    '前端含动画预览/深层历史/阅读路径/FAQ 重问',
+  );
   assert(html.includes('函数提交历史'), '首页函数提交历史标题');
   assert(!html.includes('/vendor/ace/ace.js'), '首页不再加载 Ace');
 
@@ -542,6 +665,8 @@ try {
   assert(!nvimBadOrigin.ok, 'nvim WS 拒绝非本机来源', JSON.stringify(nvimBadOrigin).slice(0, 200));
   const terminalBundle = await fetch(base + '/vendor/xterm/terminal.bundle.js');
   assert(terminalBundle.status === 200, 'xterm 终端预构建包可访问');
+  const animationBundle = await fetch(base + '/vendor/three/animation.bundle.js');
+  assert(animationBundle.status === 200, 'Three.js 动画运行时预构建包可访问');
   const xtermCss = await fetch(base + '/vendor/xterm/xterm.css');
   assert(xtermCss.status === 200, 'xterm 样式可访问');
 } catch (error) {

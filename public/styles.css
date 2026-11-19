@@ -822,3 +822,160 @@ input[readonly] { color: #8391a4; background: #111821; }
 }
 .commit-subject { color: #bdc9d6; }
 .commit-detail summary { cursor: pointer; color: #8fb9e8; font-size: 10px; }
+
+/* 阅读路径 */
+.reading-trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-deep);
+  font-size: 11px;
+}
+.trail-label { color: var(--muted); margin-right: 2px; }
+.trail-sep { color: var(--muted); }
+.trail-chip {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: #bdc9d6;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trail-chip:hover { border-color: var(--accent); color: var(--accent); }
+.trail-chip.current { border-color: var(--accent); color: var(--accent); background: #16202f; }
+
+/* 提问预设 */
+.question-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.preset-chip {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: #8fb9e8;
+  border-radius: 10px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.preset-chip:hover { border-color: var(--accent); background: #16202f; }
+
+/* 证据 */
+.evidence-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  background: #101724;
+  font-size: 12px;
+}
+.evidence-card.evidence-documentation { border-left-color: #d9a443; }
+.evidence-card.evidence-inference { border-left-color: #9a6fd8; }
+.evidence-head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.evidence-kind {
+  font-size: 10px;
+  color: var(--panel-deep);
+  background: var(--accent);
+  border-radius: 8px;
+  padding: 0 6px;
+  flex: none;
+}
+.evidence-documentation .evidence-kind { background: #d9a443; }
+.evidence-inference .evidence-kind { background: #9a6fd8; }
+.evidence-loc {
+  border: 0;
+  background: transparent;
+  color: #8fb9e8;
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.evidence-loc:hover { color: var(--accent); }
+.evidence-loc-static { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.evidence-card p { margin: 0; }
+.evidence-excerpt { margin-top: 4px; }
+.evidence-excerpt summary { cursor: pointer; color: #8fb9e8; font-size: 10px; }
+.evidence-excerpt pre {
+  margin: 4px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  background: var(--panel-deep);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+/* 建议继续阅读 */
+.next-steps { display: grid; gap: 6px; }
+.next-step {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: #101724;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  color: inherit;
+}
+.next-step:hover { border-color: var(--accent); }
+.next-step-loc { color: #8fb9e8; font-size: 11px; overflow-wrap: anywhere; }
+.next-step-reason { color: #bdc9d6; font-size: 12px; }
+
+/* FAQ 过期 */
+.faq-stale {
+  color: #f0b64f;
+  border: 1px solid #6b5426;
+  background: #241c10;
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+}
+.faq-reask {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: #8fb9e8;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.faq-reask:hover { border-color: var(--accent); }
+
+/* 历史动作 */
+.history-actions { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+.history-mode { color: var(--muted); font-size: 10px; }
+
+/* 3D 动画 */
+.animation-open { margin-top: 10px; }
+.animation-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  background: #0b1020;
+}
+.animation-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.animation-title { font-weight: 600; }
+.animation-hint { color: var(--muted); font-size: 11px; flex: 1; }
+.animation-download { text-decoration: none; }
+.animation-frame { flex: 1; width: 100%; border: 0; background: #0b1020; }

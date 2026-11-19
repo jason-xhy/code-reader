@@ -65,6 +65,7 @@
         <button id="tab-nvim" class="editor-tab" type="button" role="tab" aria-selected="false" title="在浏览器内运行本地 nvim（真实插件与键位）· Ctrl+Alt+N">nvim</button>
         <span class="editor-tabs-hint" id="editor-tabs-hint">nvim 为真实本地进程：<kbd>:w</kbd> 会写盘，插件与 LSP 使用你的本地配置</span>
       </div>
+      <nav id="reading-trail" class="reading-trail" aria-label="阅读路径" hidden></nav>
       <div id="repo-notice" class="repo-notice" hidden>
         <span id="repo-notice-text"></span>
         <button id="repo-notice-action" class="button small" type="button" hidden>恢复修改</button>
@@ -102,6 +103,7 @@
             <span>源码上下文将发送给 LLM · Enter 提交 · Shift+Enter 换行</span>
           </div>
           <label class="sr-only" for="question-input">想问的问题</label>
+          <div id="question-presets" class="question-presets"></div>
           <textarea id="question-input" rows="3" maxlength="4000" placeholder="输入想问的问题…"></textarea>
           <div id="question-error" class="inline-error" role="alert"></div>
           <div class="question-actions">
@@ -366,6 +368,16 @@
     <button type="button" data-action="copy-relative">复制相对路径</button>
     <button type="button" data-action="copy-absolute">复制绝对路径</button>
     <button type="button" data-action="refresh-tree">刷新文件树</button>
+  </div>
+
+  <div id="animation-overlay" class="animation-overlay" hidden>
+    <div class="animation-bar">
+      <span class="animation-title">3D 动画演示</span>
+      <span class="animation-hint">拖动旋转视角 · 空格播放/暂停 · ←/→ 切换步骤 · Esc 关闭</span>
+      <a id="animation-download" class="button small" download>下载离线 HTML</a>
+      <button id="animation-close" class="icon-button" type="button" aria-label="关闭动画">×</button>
+    </div>
+    <iframe id="animation-frame" class="animation-frame" sandbox="allow-scripts" title="3D 动画演示"></iframe>
   </div>
 
   <script src="/vendor/xterm/terminal.bundle.js" type="module"></script>

@@ -4,12 +4,13 @@ import { AppError } from './errors.js';
 import { anthropicMessagesUrl, resolveLlmConfig } from './llm-config.js';
 import { searchDocumentation } from './docs.js';
 import { searchWeb } from './websearch.js';
+import { buildUnderstandingContext } from './understanding.js';
+import { parseAnimation, wantsAnimation } from './animation.js';
 
 export { llmStatus, saveLlmConfig } from './llm-config.js';
 
 const MAX_QUESTION_LENGTH = 4000;
-const CONTEXT_RADIUS = 70;
-const MAX_CONTEXT_CHARS = 32_000;
+const MAX_CONTEXT_CHARS = 42_000;
 const MAX_DIAGNOSTIC_BYTES = 200 * 1024;
 const ANTHROPIC_MAX_TOKENS = 8192;
 const SPEC_HINT_RE = /规范|协议|手册|文档|章节|寄存器|时序|spec|specification|register|protocol|manual|datasheet|errata/i;
@@ -20,34 +21,39 @@ function truncateDiagnostic(value) {
   return `${text.slice(0, MAX_DIAGNOSTIC_BYTES)}\n…（已截断，共 ${text.length} 字符）`;
 }
 
-const SYSTEM_PROMPT = `你是一名严谨的代码分析助手。根据用户给出的源码、行号和问题，用中文解释代码。
+const SYSTEM_PROMPT = `你是一名严谨的代码分析助手。根据用户给出的源码、行号、相关定义和问题，用中文解释代码。
 输出必须且只能是一个 JSON 对象，不要使用 Markdown 代码围栏，结构如下：
 {
-  "overview": "先概括这段代码的目的以及当前行的作用",
+  "overview": "先概括当前函数或代码段的目的以及当前行的作用",
   "details": ["逐点分析，每点解释一个关键机制、数据流或约束"],
   "summary": "最后总结读者应记住的核心结论",
+  "evidence": [
+    {"claim": "需要证据支持的结论", "kind": "code|documentation|inference", "file": "代码仓库相对路径，非代码证据留空", "lineStart": 1, "lineEnd": 1, "source": "文档来源，代码证据留空", "section": "文档章节或空字符串", "page": 0, "excerpt": "文档原文片段或空字符串"}
+  ],
+  "nextSteps": [{"file": "仓库相对路径", "line": 1, "reason": "为什么建议接着读这里"}],
   "specifications": [
-    {"name": "规范名称", "version": "能确认的版本，否则空字符串", "section": "章节或条款，无法确认则写未核实", "relevance": "规范与代码行为的对应关系", "verified": false}
-  ]
+    {"name": "规范名称", "version": "能确认的版本，否则空字符串", "section": "章节或条款，无法确认则写未核实", "source": "实际检索到的来源文件，否则空字符串", "relevance": "规范与代码行为的对应关系", "verified": false}
+  ],
+  "animation": null
 }
-必须遵循总—分—总结构，details 至少两项。只依据给定源码作事实判断，不确定之处明确说明。
-如果输入提供了 localDocumentation，它来自用户指定的本地文档/规范目录，应优先依据其内容回答，并在正文或 specifications 中标注来源文件；不得把片段内容改写成未提供的官方原文。
+必须遵循总—分—总结构，details 至少两项。只依据给定源码作事实判断，不确定之处明确说明。evidence 中的代码位置必须来自输入实际提供的文件和行号；推断必须使用 kind=inference，不能伪装成事实。nextSteps 最多三项，只能推荐输入中实际出现的代码位置。
+如果输入提供了 localDocumentation，它来自用户指定的本地文档/规范目录，应优先依据其内容回答，并在 evidence 或 specifications 中标注来源文件、章节和页码（若有）；不得把片段内容改写成未提供的官方原文。
 如果输入提供了 webSearch，它是网络检索结果，可能不准确或过时，必须在正文中标注“网络检索未核验”，禁止把未核验内容当作官方规范原文。
-若涉及硬件协议、总线、寄存器或时序，必须结合相应官方规范解释，并在 specifications 中列出规范名称、可确认版本/章节以及与代码的对应关系。严禁编造规范号、版本、章节或原文；无法核实时将 section 写为“未核实”并将 verified 设为 false。非硬件协议问题返回空 specifications 数组。`;
+若涉及硬件协议、总线、寄存器或时序，必须结合相应官方规范解释，并在 specifications 中列出规范名称、可确认版本/章节以及与代码的对应关系。严禁编造规范号、版本、章节或原文；无法核实时将 section 写为“未核实”并将 verified 设为 false。非硬件协议问题返回空 specifications 数组。
+只有当用户明确要求动画、三维或 3D 演示时，才把 animation 从 null 替换为以下结构；否则必须保持 null：
+{
+  "title": "演示标题", "summary": "演示范围与限制",
+  "nodes": [{"id": "简短英文标识", "label": "节点名称", "kind": "code|data|spec|decision|output", "description": "节点职责"}],
+  "steps": [{"title": "步骤名称", "detail": "代码如何执行以及对应规范约束", "node": "当前节点 id", "from": "可选起点节点 id", "to": "可选终点节点 id", "file": "仓库相对路径", "lineStart": 1, "lineEnd": 1, "spec": "对应规范章节或空字符串"}]
+}
+动画用于解释真实执行顺序，nodes 最多 8 个，steps 2 至 16 个；每个步骤必须能由输入代码或文档支持，不得生成 HTML、JavaScript、任意场景代码或虚构执行步骤。`;
 
-function contextFor(source, line) {
-  const lines = source.content.split('\n');
-  const start = Math.max(1, line - CONTEXT_RADIUS);
-  const end = Math.min(lines.length, line + CONTEXT_RADIUS);
-  let selected = lines.slice(start - 1, end)
-    .map((text, index) => `${String(start + index).padStart(6, ' ')} | ${text}`)
-    .join('\n');
-  if (selected.length > MAX_CONTEXT_CHARS) {
-    const half = Math.floor(MAX_CONTEXT_CHARS / 2);
-    const current = lines[line - 1] || '';
-    selected = `${selected.slice(0, half)}\n...\n${String(line).padStart(6, ' ')} | ${current}\n...\n${selected.slice(-half)}`;
-  }
-  return { start, end, text: selected };
+function contextFor(understanding) {
+  if (understanding.text.length <= MAX_CONTEXT_CHARS) return understanding;
+  return {
+    ...understanding,
+    text: `${understanding.text.slice(0, MAX_CONTEXT_CHARS)}\n... 总上下文达到长度限制 ...`,
+  };
 }
 
 function extractJsonObject(raw) {
@@ -88,7 +94,35 @@ function extractJsonObject(raw) {
   return null;
 }
 
-function parseExplanation(raw) {
+function optionalLine(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function parseEvidence(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 16).map((item) => ({
+    claim: typeof item?.claim === 'string' ? item.claim.trim().slice(0, 1200) : '',
+    kind: ['code', 'documentation', 'inference'].includes(item?.kind) ? item.kind : 'inference',
+    file: typeof item?.file === 'string' ? item.file.trim().slice(0, 300) : '',
+    lineStart: optionalLine(item?.lineStart),
+    lineEnd: optionalLine(item?.lineEnd),
+    source: typeof item?.source === 'string' ? item.source.trim().slice(0, 500) : '',
+    section: typeof item?.section === 'string' ? item.section.trim().slice(0, 300) : '',
+    page: optionalLine(item?.page),
+    excerpt: typeof item?.excerpt === 'string' ? item.excerpt.trim().slice(0, 1600) : '',
+  })).filter((item) => item.claim);
+}
+
+function parseNextSteps(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 3).map((item) => ({
+    file: typeof item?.file === 'string' ? item.file.trim().slice(0, 300) : '',
+    line: optionalLine(item?.line),
+    reason: typeof item?.reason === 'string' ? item.reason.trim().slice(0, 500) : '',
+  })).filter((item) => item.file && item.line && item.reason);
+}
+
+function parseExplanation(raw, animationRequested = false) {
   const value = extractJsonObject(raw);
   if (!value) {
     throw new AppError('LLM 返回的内容不是有效 JSON，请重试', 502, 'INVALID_LLM_RESPONSE');
@@ -102,14 +136,18 @@ function parseExplanation(raw) {
     name: typeof spec?.name === 'string' ? spec.name : '未命名规范',
     version: typeof spec?.version === 'string' ? spec.version : '',
     section: typeof spec?.section === 'string' && spec.section ? spec.section : '未核实',
+    source: typeof spec?.source === 'string' ? spec.source.trim().slice(0, 500) : '',
     relevance: typeof spec?.relevance === 'string' ? spec.relevance : '',
-    verified: spec?.verified === true,
+    verified: false,
   }));
   return {
     overview: value.overview,
     details,
     summary: value.summary,
+    evidence: parseEvidence(value.evidence),
+    nextSteps: parseNextSteps(value.nextSteps),
     specifications,
+    animation: animationRequested ? parseAnimation(value.animation) : null,
   };
 }
 
@@ -229,13 +267,19 @@ export async function explainSource(source, filePath, line, question, options = 
   if (!config.configured) {
     throw new AppError('LLM 未配置，请点击左下角“LLM 设置”选择模型并保存 API Key', 503, 'LLM_NOT_CONFIGURED');
   }
-  const context = contextFor(source, line);
+  const animationRequested = wantsAnimation(question);
+  const context = contextFor(await buildUnderstandingContext({
+    repositoryRoot: options.repositoryRoot,
+    filePath,
+    source,
+    line,
+  }));
   const currentLine = (source.content.split('\n')[line - 1] || '').slice(0, 400);
   let documentation = { hits: [], config: { webEnabled: false }, stats: { files: 0, chunks: 0 } };
   try {
     documentation = await searchDocumentation({
       repositoryRoot: options.repositoryRoot,
-      query: [question, filePath, currentLine, currentLine.replace(/_+/g, ' ')].join(' '),
+      query: [question, filePath, context.scope.symbol, context.queryText, currentLine, currentLine.replace(/_+/g, ' ')].join(' '),
     });
   } catch (error) {
     console.error('[llm] 本地文档检索失败：', error?.message || error);
@@ -251,6 +295,8 @@ export async function explainSource(source, filePath, line, question, options = 
   }
   const localDocumentation = documentation.hits.map((hit) => ({
     source: hit.source,
+    section: hit.section || '',
+    page: hit.page || null,
     excerpt: hit.text,
   }));
   const webResults = webSearch && Array.isArray(webSearch.results)
@@ -265,7 +311,9 @@ export async function explainSource(source, filePath, line, question, options = 
     file: filePath,
     currentLine: line,
     question: question.trim(),
+    animationRequested,
     sourceContext: context.text,
+    relatedDefinitions: context.relatedDefinitions,
     ...(localDocumentation.length ? { localDocumentation } : {}),
     ...(webResults.length ? { webSearch: webResults } : {}),
   });
@@ -273,7 +321,7 @@ export async function explainSource(source, filePath, line, question, options = 
   const first = await requestCompletion(config, messages);
   let explanation;
   try {
-    explanation = parseExplanation(first.content);
+    explanation = parseExplanation(first.content, animationRequested);
   } catch (error) {
     if (!(error instanceof AppError) || error.code !== 'INVALID_LLM_RESPONSE' || !first.content.trim()) {
       if (error instanceof AppError && !error.details) {
@@ -288,7 +336,7 @@ export async function explainSource(source, filePath, line, question, options = 
       { role: 'user', content: '上面的回答不符合要求。请严格按系统提示的结构重新回答，只输出一个 JSON 对象，不要输出 Markdown 代码围栏或任何额外说明。' },
     ]);
     try {
-      explanation = parseExplanation(retry.content);
+      explanation = parseExplanation(retry.content, animationRequested);
     } catch (retryError) {
       if (retryError instanceof AppError) {
         retryError.details = {
@@ -300,14 +348,24 @@ export async function explainSource(source, filePath, line, question, options = 
       throw retryError;
     }
   }
+  const documentedSources = new Set(documentation.hits.map((hit) => hit.source));
+  explanation.specifications = explanation.specifications.map((spec) => ({
+    ...spec,
+    verified: Boolean(spec.source && documentedSources.has(spec.source) && spec.section && spec.section !== '未核实'),
+  }));
   return {
     explanation,
     context: { start: context.start, end: context.end },
+    scope: context.scope,
+    relatedDefinitions: context.relatedDefinitions,
     model: config.model,
     sources: {
       local: documentation.hits.map((hit) => ({
         source: hit.source,
         file: hit.file,
+        section: hit.section || '',
+        page: hit.page || null,
+        excerpt: hit.text.slice(0, 1600),
         score: Math.round(hit.score * 100) / 100,
       })),
       web: (webSearch?.results || []).slice(0, 5).map((result) => ({

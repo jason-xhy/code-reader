@@ -13,4 +13,7 @@ Their full license texts are available in `node_modules/` after `npm install`, o
 `public/vendor/xterm/terminal.bundle.js` bundles `@xterm/xterm` and `@xterm/addon-fit` (MIT).
 The server uses `node-pty` (MIT) and `ws` (MIT).
 
+`public/vendor/three/animation.bundle.js` bundles `three` and its `OrbitControls` addon (MIT).
+Animation HTML files exported by Code Reader embed this bundled runtime and can be opened offline without a CDN.
+
 The project source itself is licensed under the MIT License; see [LICENSE](LICENSE).

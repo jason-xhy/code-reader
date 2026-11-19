@@ -328,6 +328,40 @@ export async function functionHistory(root, filePath, line) {
   return result;
 }
 
+// 按需深入历史：比 blame 慢，因此只在用户明确点击“深入演进”时运行。
+export async function functionEvolution(root, filePath, line) {
+  validateRelativePath(filePath);
+  if (!Number.isInteger(line) || line < 1) throw new AppError('行号必须是正整数', 400, 'INVALID_LINE');
+  const source = await readSource(root, filePath);
+  if (line > source.lines) throw new AppError('行号超出文件范围', 400, 'INVALID_LINE');
+  const segment = detectFunctionSegment(source.content, line) || detectSegment(source.content, line);
+  const lineStart = segment?.lineStart || line;
+  const lineEnd = segment?.lineEnd || line;
+  const marker = '__CODE_READER_HISTORY__';
+  const output = await runGit([
+    'log', '-n', '5', `--format=${marker}%H%x00%an%x00%aI%x00%s`,
+    '-L', `${lineStart},${lineEnd}:${filePath}`,
+  ], { cwd: root, timeout: 120_000, maxOutput: 16 * 1024 * 1024 });
+  const commits = [];
+  for (const row of output.split('\n')) {
+    if (!row.startsWith(marker)) continue;
+    const [hash, author, date, subject] = row.slice(marker.length).split('\0');
+    if (/^[0-9a-f]{40}$/.test(hash || '')) {
+      commits.push({ hash: hash.slice(0, 10), author: author || '', date: date || '', subject: subject || '' });
+    }
+  }
+  return {
+    path: filePath,
+    line,
+    lineStart,
+    lineEnd,
+    symbol: segment?.symbol || null,
+    head: (await runGit(['rev-parse', 'HEAD'], { cwd: root })).trim(),
+    commits,
+    mode: 'evolution',
+  };
+}
+
 async function stashEntries(root) {
   const output = await runGit(['stash', 'list', '--format=%gd%x00%H%x00%gs'], { cwd: root });
   return output.split('\n').filter(Boolean).map((line) => {
