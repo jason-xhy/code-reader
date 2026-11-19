@@ -476,6 +476,10 @@ try {
   assert(appSource.includes('historyCoversLine') && appSource.includes('cachedFunctionHistory'), '前端函数内移动不重复刷新历史');
   assert(appSource.includes('loadReferencePreview') && editorSource.includes('quickpick-preview'), '前端引用列表带上下文预览');
   assert(appSource.includes('applyEditorFont') && appSource.includes('code-reader-theme-v2'), '前端同步本地字体并以本地主题为默认');
+  assert(
+    appSource.includes("event.code === 'KeyE'") && appSource.includes("event.code === 'KeyN'") && html.includes('Ctrl+Alt+E'),
+    '编辑器/nvim 页签支持 Ctrl+Alt+E / Ctrl+Alt+N 切换',
+  );
   assert(html.includes('footer-status') && html.includes('editor-env-options'), '首页底部状态行与编辑器环境选项容器');
   assert(editorSource.includes('whitespaceExtension') && editorSource.includes('setProfile') && editorSource.includes('profileTheme'), '编辑器支持本地 profile 主题与 listchars');
   const editorProfile = await api('GET', '/api/editor/profile');

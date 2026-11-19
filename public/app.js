@@ -2473,6 +2473,18 @@ document.addEventListener('keydown', (event) => {
   editor.quickpickKeydown(event);
 }, true);
 
+// 编辑器 ⇄ nvim 页签切换：Ctrl+Alt+E / Ctrl+Alt+N。
+// 捕获阶段消费事件：否则 CodeMirror / xterm 会先把组合键当成输入（nvim 终端会把它发给 PTY）。
+// 用 event.code 判键：部分布局（AltGr）下 event.key 会变成别的字符。
+document.addEventListener('keydown', (event) => {
+  if (!event.ctrlKey || !event.altKey || event.metaKey || event.repeat || event.isComposing) return;
+  const mode = event.code === 'KeyE' ? 'editor' : event.code === 'KeyN' ? 'nvim' : null;
+  if (!mode) return;
+  event.preventDefault();
+  event.stopPropagation();
+  setEditorMode(mode);
+}, true);
+
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !elements.commitOverlay.hidden) {
     event.preventDefault();
