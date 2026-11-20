@@ -1,7 +1,7 @@
 // 能力：分析与解释面板（函数历史、FAQ、提交详情、提问、解释与 3D 动画）。
 import { createAnimationHtml } from '../animation-html.js';
 import { elements } from '../core/dom.js';
-import { state, editor } from '../core/state.js';
+import { state, editor, noteFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 import { showNotice } from '../core/notice.js';
 import { ANIMATION_HINT_RE, QUESTION_PRESETS } from '../core/config.js';
@@ -591,6 +591,7 @@ export function openQuestion() {
   elements.questionInput.disabled = false;
   elements.questionSubmit.disabled = false;
   elements.questionSubmit.textContent = '确定';
+  noteFocusIntent();
   elements.questionInput.focus();
 }
 
@@ -917,6 +918,8 @@ export function focusExplanationPanel() {
   if (!elements.commitOverlay.hidden || document.querySelector('dialog[open]')) return;
   // 面板已被收起时不要再聚焦（聚焦会触发 focusin 把面板重新滑出来）。
   if (!document.getElementById('app').classList.contains('insights-visible')) return;
+  // 解释窗口拿到焦点：递增焦点意图，作废加载中代码窗的「迟到接管」。
+  noteFocusIntent();
   // 解释还没生成时，解释内容是空的，j/k 无处可去；此时把焦点交给函数提交
   // 历史的第一条，打开窗口即可用 j/k 浏览提交（有解释时仍优先解释内容）。
   const explanationEmpty = elements.explanationContent.classList.contains('empty-insight');

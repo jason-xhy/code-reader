@@ -71,3 +71,17 @@ export let editor = null;
 export function setEditor(value) {
   editor = value;
 }
+
+// 焦点意图纪元：用户每把焦点交给一个窗口/弹层（文件树、解释窗、quickpick、
+// 对话框等）就递增。异步源码加载回来时只在纪元未变时接管焦点——否则迟到的
+// 内容会把用户刚打开的窗口抢走（2026-11-20 七期 grill 实锤：加载在飞时开窗，
+// 700ms 后 CM6 view.focus() 把焦点抢回代码窗）。
+let focusIntent = 0;
+
+export function noteFocusIntent() {
+  focusIntent += 1;
+}
+
+export function getFocusIntent() {
+  return focusIntent;
+}

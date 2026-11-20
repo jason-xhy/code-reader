@@ -1178,6 +1178,77 @@ try {
   await evaluate("document.querySelector('.cm-content').focus(); true");
   await sleep(150);
 
+  // 回归：源码加载在飞时打开窗口，加载完成后焦点必须留在窗口。
+  // 2026-11-20 七期 grill 实锤：静态断言只覆盖「打开瞬间焦点」，覆盖不了
+  // selectFile 完成时无条件 editor.focus() 把加载期间打开的窗口抢走
+  // （700ms 时序窗口，用户表现为「打开代码树/解释窗后 j/k 仍落代码窗」）。
+  const raceOriginal = await snapshot();
+  const raceFiles = await evaluateJson('JSON.stringify(window.__ts.fileList(0, 80))');
+  const raceCandidates = raceFiles.filter((file) => file !== raceOriginal.currentFile);
+  const raceTarget = raceCandidates[0];
+  const raceTarget2 = raceCandidates[1] || raceCandidates[0];
+  await evaluate(`(() => {
+    if (!window.__crRaceFetch) {
+      window.__crRaceFetch = window.fetch.bind(window);
+      window.fetch = (...args) => {
+        const url = String(args[0]);
+        if (url.includes('/file?')) return new Promise((resolve) => setTimeout(resolve, 650)).then(() => window.__crRaceFetch(...args));
+        return window.__crRaceFetch(...args);
+      };
+    }
+    return true;
+  })()`);
+  await evaluate("document.querySelector('.cm-content').focus(); true");
+  await evaluate(`(() => { window.__ts.openFile(${JSON.stringify(raceTarget)}); return true; })()`);
+  await sleep(60);
+  await pressRealKey('i', 'KeyI', 73, 3);
+  await sleep(180);
+  const raceInsightsEarly = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('insights-visible'), inInsights: Boolean(document.activeElement?.closest?.('.insights')) })");
+  await sleep(1200);
+  const raceCursorBeforeJ = await evaluate('window.__ts.snapshot().editor.cursor.line');
+  const raceInsightsLate = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('insights-visible'), inInsights: Boolean(document.activeElement?.closest?.('.insights')), inEditor: Boolean(document.activeElement?.closest?.('#editor-host')) })");
+  await pressRealKey('j', 'KeyJ', 74);
+  await sleep(250);
+  const raceInsightsAfterJ = await evaluateJson("JSON.stringify({ inInsights: Boolean(document.activeElement?.closest?.('.insights')), cursor: window.__ts.snapshot().editor.cursor.line })");
+  check(
+    '加载在飞时打开解释窗口，加载完成后焦点仍在解释窗口且 j 不落回代码窗',
+    raceInsightsEarly.visible && raceInsightsEarly.inInsights && raceInsightsLate.inInsights
+    && !raceInsightsLate.inEditor && raceInsightsAfterJ.inInsights && raceInsightsAfterJ.cursor === raceCursorBeforeJ,
+    JSON.stringify({ raceTarget, raceInsightsEarly, raceInsightsLate, raceInsightsAfterJ, raceCursorBeforeJ }),
+  );
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(300);
+
+  await evaluate("window.__crPanels?.hideAll(); document.querySelector('.cm-content').focus(); true");
+  await sleep(400);
+  await evaluate(`(() => { window.__ts.openFile(${JSON.stringify(raceTarget2)}); return true; })()`);
+  await sleep(60);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 360, buttons: 0 });
+  await sleep(250);
+  const raceTreeEarly = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('sidebar-visible'), inTree: Boolean(document.activeElement?.closest?.('#file-tree')) })");
+  await sleep(1100);
+  const raceTreeCursor = await evaluate('window.__ts.snapshot().editor.cursor.line');
+  const raceTreeLate = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('sidebar-visible'), inTree: Boolean(document.activeElement?.closest?.('#file-tree')), inEditor: Boolean(document.activeElement?.closest?.('#editor-host')) })");
+  const raceTreeIndexBefore = await evaluate("[...document.querySelectorAll('#file-tree .tree-row')].findIndex((row) => row.classList.contains('key-focus'))");
+  await pressRealKey('j', 'KeyJ', 74);
+  await sleep(250);
+  const raceTreeAfterJ = await evaluateJson("JSON.stringify({ inTree: Boolean(document.activeElement?.closest?.('#file-tree')), index: [...document.querySelectorAll('#file-tree .tree-row')].findIndex((row) => row.classList.contains('key-focus')), cursor: window.__ts.snapshot().editor.cursor.line })");
+  check(
+    '加载在飞时悬停打开代码树，加载完成后焦点仍在文件树且 j 导航文件树',
+    raceTreeEarly.visible && raceTreeEarly.inTree && raceTreeLate.inTree && !raceTreeLate.inEditor
+    && raceTreeAfterJ.inTree && raceTreeAfterJ.index === raceTreeIndexBefore + 1 && raceTreeAfterJ.cursor === raceTreeCursor,
+    JSON.stringify({ raceTarget2, raceTreeEarly, raceTreeLate, raceTreeIndexBefore, raceTreeAfterJ, raceTreeCursor }),
+  );
+  await evaluate("window.fetch = window.__crRaceFetch; true");
+  if (raceOriginal.currentFile) {
+    await evaluate(`(() => { window.__ts.openFile(${JSON.stringify(raceOriginal.currentFile)}, ${raceOriginal.cursor?.line || 1}, ${raceOriginal.cursor?.character || 0}); return true; })()`);
+    await sleep(900);
+  }
+  await evaluate("window.__crPanels?.hideAll(); true");
+  // 指针停在左边缘会让后续「隐藏面板 + pointerenter 滑出」用例被 400ms 抑制窗干扰，先移回中性位置。
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 400, buttons: 0 });
+  await sleep(500);
+
   // 原生对话框同样支持 j/k/gg/G（文本输入框不在项列表里，用 Tab 进入）。
   await evaluate("document.querySelector('#open-menu').click(); true");
   await waitFor("Boolean(document.querySelector('dialog[open]'))", 5000);

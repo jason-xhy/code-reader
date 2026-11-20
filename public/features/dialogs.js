@@ -1,6 +1,6 @@
 // 能力：打开仓库对话框、目录浏览器与文档知识库配置对话框。
 import { elements } from '../core/dom.js';
-import { state } from '../core/state.js';
+import { state, noteFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 
 let deps = {};
@@ -161,6 +161,7 @@ function renderDocsDialog() {
 async function openDocsDialog() {
   state.docsError = '';
   await loadDocsConfig();
+  noteFocusIntent();
   elements.docsDialog.showModal();
 }
 
@@ -182,6 +183,7 @@ function setOpenMode(mode) {
 function showOpenDialog() {
   elements.openError.textContent = '';
   elements.openProgress.textContent = '';
+  noteFocusIntent();
   elements.openDialog.showModal();
   setOpenMode(state.openMode);
 }

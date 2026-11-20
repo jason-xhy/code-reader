@@ -1,6 +1,6 @@
 // 能力：编辑器环境、本地 profile、主题联动与 nvim 面板切换。
 import { elements } from '../core/dom.js';
-import { state, editor } from '../core/state.js';
+import { state, editor, noteFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 import { THEME_KEY } from '../core/config.js';
 import { applyEditorFont, applyShellTheme, populateThemes } from '../core/layout.js';
@@ -21,10 +21,12 @@ export function initEditorModeFeature() {
   elements.nvimOpenCurrent.addEventListener('click', openCurrentInNvim);
   elements.nvimKeys.addEventListener('click', () => {
     renderNvimKeymaps();
+    noteFocusIntent();
     elements.nvimKeymapDialog.showModal();
   });
   elements.nvimKeymapClose.addEventListener('click', () => elements.nvimKeymapDialog.close());
   elements.editorEnvSettings.addEventListener('click', async () => {
+    noteFocusIntent();
     elements.editorEnvDialog.showModal();
     renderEditorEnvDialog();
     await loadEditorEnv({ openDialog: true });

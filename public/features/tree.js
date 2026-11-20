@@ -1,7 +1,7 @@
 // 能力：代码树（建树、过滤、键盘导航、右键菜单）。
 // 数据派生（小写表/路径集合/树）按仓库缓存；本模块不依赖 app.js，跨模块动作通过 initTreeFeature 注入。
 import { elements } from '../core/dom.js';
-import { state, sessions, jumpStack, jumpForwardStack, editor } from '../core/state.js';
+import { state, sessions, jumpStack, jumpForwardStack, editor, getFocusIntent, noteFocusIntent } from '../core/state.js';
 import { copyText } from '../core/api.js';
 import { FILE_ICONS, MAX_PREPARED_FILES, PREPARED_LIMIT, TREE_FILTER_LIMIT } from '../core/config.js';
 import { focusFirstMenuItem, scheduleIdle } from '../core/utils.js';
@@ -263,8 +263,11 @@ function openFilteredFile(filePath) {
   if (!filePath) return;
   jumpStack.length = 0;
   jumpForwardStack.length = 0;
-  deps.selectFile(filePath);
-  elements.treeFilter.focus();
+  const intent = getFocusIntent();
+  deps.selectFile(filePath).then(() => {
+    // 加载期间用户若打开了别的窗口，焦点留在那个窗口，不抢回过滤框。
+    if (intent === getFocusIntent()) elements.treeFilter.focus();
+  });
 }
 
 export function renderTree() {
@@ -361,6 +364,8 @@ export function focusTree() {
   if (!state.repository) return false;
   const rows = treeRows();
   if (!rows.length) return false;
+  // 文件树窗口拿到焦点：递增焦点意图，作废加载中代码窗的「迟到接管」。
+  noteFocusIntent();
   // 文件树默认收起为覆盖层：键盘聚焦时先滑出，避免焦点落在屏幕外。
   window.__crPanels?.show('sidebar');
   treeFocusIndex = rows.findIndex((row) => row.dataset.path === state.currentFile);
@@ -385,8 +390,10 @@ export async function activateTreeRow(row) {
   }
   jumpStack.length = 0;
   jumpForwardStack.length = 0;
+  const intent = getFocusIntent();
   await deps.selectFile(row.dataset.path);
-  editor.focus();
+  // 加载期间用户若打开了别的窗口（解释窗/quickpick…），焦点归最新窗口。
+  if (intent === getFocusIntent()) editor.focus();
 }
 
 function showTreeMenu(context, left, top) {
@@ -395,6 +402,7 @@ function showTreeMenu(context, left, top) {
   elements.treeMenu.hidden = false;
   elements.treeMenu.style.left = `${left}px`;
   elements.treeMenu.style.top = `${top}px`;
+  noteFocusIntent();
   focusFirstMenuItem(elements.treeMenu);
 }
 

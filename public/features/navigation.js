@@ -1,6 +1,6 @@
 // 能力：阅读导航（跳转栈、gd/gr、阅读路径、\e/:e 文件、两侧栏入口）。
 import { elements } from '../core/dom.js';
-import { state, jumpStack, jumpForwardStack, editor } from '../core/state.js';
+import { state, jumpStack, jumpForwardStack, editor, noteFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 import { focusTree } from './tree.js';
 
@@ -193,6 +193,7 @@ export async function gotoDefinition() {
     }
     // 引用/定义列表覆盖代码区，收起两侧悬停面板避免遮住列表。
     window.__crPanels?.hideAll();
+    noteFocusIntent();
     editor.showQuickpick(data.locations, (picked) => {
       jumpTo(picked);
     });
@@ -240,6 +241,7 @@ export async function gotoReferences() {
       return;
     }
     window.__crPanels?.hideAll();
+    noteFocusIntent();
     editor.showQuickpick(data.locations, (picked) => {
       jumpTo(picked);
     }, {

@@ -1,5 +1,7 @@
 // one-shot: code-reader 前端页面源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 与 code-reader 的 DOM 结构强绑定
 // grill: 成品检索=skill 库无该页面设置模块成品; 输入固定=固定表单元素与 /api/config 响应; 步骤机械=渲染厂商/协议字段并提交; 判读固定=按响应 llm 对象回填; 失效场景=构造不出（仅本应用）
+import { noteFocusIntent } from './core/state.js';
+
 export function createLlmSettings({ api, onStatus }) {
   const elements = {
     dialog: document.querySelector('#llm-dialog'),
@@ -100,9 +102,11 @@ export function createLlmSettings({ api, onStatus }) {
     try {
       await load();
       render();
+      noteFocusIntent();
       if (!elements.dialog.open) elements.dialog.showModal();
     } catch (error) {
       elements.error.textContent = error.message;
+      noteFocusIntent();
       if (!elements.dialog.open) elements.dialog.showModal();
     }
   }

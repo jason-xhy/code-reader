@@ -1,6 +1,6 @@
 // 能力：阅读历史菜单（最近打开的仓库与位置）。
 import { elements } from '../core/dom.js';
-import { state } from '../core/state.js';
+import { state, noteFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 import { focusFirstMenuItem, menuButtons, relativeTime } from '../core/utils.js';
 import { showNotice } from '../core/notice.js';
@@ -16,6 +16,7 @@ export function initReadingHistory(dependencies) {
     elements.historyMenuButton.setAttribute('aria-expanded', String(willOpen));
     if (willOpen) {
       await loadReadingHistory();
+      noteFocusIntent();
       focusFirstMenuItem(elements.historyMenu);
     } else {
       elements.historyMenuButton.focus();

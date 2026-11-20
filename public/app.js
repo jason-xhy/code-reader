@@ -2,7 +2,7 @@
 // 具体能力在 features/*，共享数据/配置/策略在 core/*；本文件不再堆叠功能实现。
 import { createEditor, THEMES } from './editor.js';
 import { elements } from './core/dom.js';
-import { state, setEditor, editor, jumpStack, jumpForwardStack } from './core/state.js';
+import { state, setEditor, editor, jumpStack, jumpForwardStack, getFocusIntent, noteFocusIntent } from './core/state.js';
 import { api } from './core/api.js';
 import { THEME_KEY } from './core/config.js';
 import { showNotice } from './core/notice.js';
@@ -115,6 +115,9 @@ function renderSource({ focus = true } = {}) {
 //        'auto'   = 页面恢复等后台加载，只有没有别的窗口持有焦点时才接管。
 async function selectFile(filePath, reveal = null, { focus = 'always' } = {}) {
   const background = focus === 'auto';
+  // 记录加载开始时的焦点意图：加载期间用户若打开文件树/解释窗/quickpick/对话框，
+  // 说明「最新意图」已经不在代码窗，迟到的内容不得把焦点抢回去。
+  const intent = getFocusIntent();
   if (!state.repository || (state.currentFile === filePath && !reveal)) return;
   const switching = state.currentFile !== filePath;
   state.currentFile = filePath;
@@ -136,8 +139,9 @@ async function selectFile(filePath, reveal = null, { focus = 'always' } = {}) {
   }
   elements.currentFile.textContent = filePath;
   if (!switching) {
-    if (reveal) editor.revealPosition(reveal.line, reveal.character, { focus: !background });
-    if (background && !sidePanelOwnsFocus()) editor.focus();
+    const canFocus = intent === getFocusIntent();
+    if (reveal) editor.revealPosition(reveal.line, reveal.character, { focus: !background && canFocus });
+    if (background && canFocus && !sidePanelOwnsFocus()) editor.focus();
     scheduleHistoryTouch();
     return;
   }
@@ -146,10 +150,11 @@ async function selectFile(filePath, reveal = null, { focus = 'always' } = {}) {
     const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/file?path=${encodeURIComponent(filePath)}`);
     if (state.currentFile !== filePath) return;
     state.source = data;
-    renderSource({ focus: !background });
-    if (reveal) editor.revealPosition(reveal.line, reveal.character, { focus: !background });
+    const canFocus = intent === getFocusIntent();
+    renderSource({ focus: !background && canFocus });
+    if (reveal) editor.revealPosition(reveal.line, reveal.character, { focus: !background && canFocus });
     // 恢复期间用户可能已打开代码树/解释窗口：内容到达后按实况决定焦点归属。
-    if (background && !sidePanelOwnsFocus()) editor.focus();
+    if (background && canFocus && !sidePanelOwnsFocus()) editor.focus();
     const line = reveal?.line || 1;
     state.activeLine = line;
     pushReadingTrail({ path: filePath, line });
@@ -295,6 +300,7 @@ const editorInstance = createEditor({
     return exFileCompletions(value);
   },
   onHelp() {
+    noteFocusIntent();
     elements.vimHelpDialog.showModal();
   },
   onWorkspaceSearch() {

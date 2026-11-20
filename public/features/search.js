@@ -1,7 +1,7 @@
 // 能力：工作区模糊搜索（函数定义 / 文件名）。
 // 交互形态复用 gr 的引用窗口：左侧结果列表 + 右侧上下文预览，完全匹配排前。
 import { elements } from '../core/dom.js';
-import { state, editor } from '../core/state.js';
+import { state, editor, noteFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 import { SEARCH_DEBOUNCE_MS } from '../core/config.js';
 import { debounce } from '../core/utils.js';
@@ -33,6 +33,7 @@ export function openWorkspaceSearch() {
   }
   // 对话框/提交详情/动画等顶层弹层在场时不要在其背后打开搜索窗。
   if (topLayerOpen()) return false;
+  noteFocusIntent();
   const repositoryId = state.repository.id;
   const sessionId = `workspace-search-${++sessionCounter}`;
   requestSeq += 1;
