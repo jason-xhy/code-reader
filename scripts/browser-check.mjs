@@ -586,6 +586,7 @@ try {
   const afterSneakJump = await evaluateJson(`JSON.stringify({
     mode: window.__crKeyboardNavState?.mode,
     cursor: window.__ts.snapshot().editor.cursor,
+    vimMode: document.querySelector('#vim-mode')?.textContent || '',
     inEditor: Boolean(document.activeElement?.closest?.('#editor-host')),
   })`);
   check(
@@ -593,6 +594,11 @@ try {
     afterSneakJump.mode === null && afterSneakJump.inEditor
     && (sneakTarget?.line == null || afterSneakJump.cursor.line === sneakTarget.line),
     JSON.stringify({ sneakTarget, afterSneakJump }),
+  );
+  check(
+    '两字符定位后停在 NORMAL 模式（不进入 VISUAL）',
+    afterSneakJump.vimMode === '--NORMAL--',
+    JSON.stringify({ vimMode: afterSneakJump.vimMode }),
   );
 
   // 历史菜单 / 文件树右键菜单 / 分隔条都用键盘操作，不依赖鼠标。
@@ -679,6 +685,9 @@ try {
   await evaluate("window.__crPanels?.toggle('insights'); document.querySelector('.cm-content')?.focus(); true");
   await sleep(260);
   await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyI', key: 'i', ctrlKey: true, altKey: true, bubbles: true })); true");
+  // 打开即交焦点：紧随其后的 j/k 必须落在解释窗口，而不是 200ms 后才生效。
+  const focusedImmediately = await evaluate("document.activeElement?.id || ''");
+  check('Ctrl+Alt+I 打开即转移焦点（不等动画）', focusedImmediately === 'explanation-content', focusedImmediately);
   await waitFor("document.querySelector('#app').classList.contains('insights-visible')", 5000);
   await sleep(350);
   const focusedAfterToggle = await evaluate("document.activeElement?.id || document.activeElement?.className || ''");

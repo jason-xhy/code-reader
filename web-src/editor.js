@@ -1070,7 +1070,9 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
 
   function jumpToMatch(match) {
     if (!match || typeof match.from !== 'number') return false;
-    view.dispatch({ selection: { anchor: match.from, head: match.to ?? match.from }, scrollIntoView: true });
+    // 光标落在匹配起点，不能设成 from..to 的区间选择：非空选区会被 Vim 插件
+    // 当成 VISUAL 模式（Esc 才能退出），两字符定位只是移动光标。
+    view.dispatch({ selection: { anchor: match.from }, scrollIntoView: true });
     view.focus();
     return true;
   }

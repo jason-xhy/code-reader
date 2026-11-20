@@ -134,7 +134,10 @@ export function toggleInsightsPanel() {
   }
   // 隐藏时打开；悬停/已打开时钉住；随后聚焦解释窗口以便 j/k 导航。
   window.__crPanels?.pin('insights');
-  setTimeout(deps.focusExplanationPanel, visible ? 0 : 200);
+  // 打开即交焦点：延迟 200ms 会让紧随其后的 j/k 仍落在编辑器里（表现为“没转移焦点”）。
+  deps.focusExplanationPanel();
+  // 首次从隐藏态滑出时再补一次：个别浏览器会忽略对刚取消 inert 元素的首帧聚焦。
+  if (!visible) setTimeout(deps.focusExplanationPanel, 0);
 }
 
 // ---- 跳转 ----
