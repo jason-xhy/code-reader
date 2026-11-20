@@ -527,7 +527,9 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   attachVimEvents();
   updateCursorPos();
 
-  function openFile(filePath, content) {
+  // 打开/定位内容默认把焦点交给编辑器；后台恢复传 focus:false，由调用方在
+  // 内容到达后统一决定焦点归属，避免把焦点从用户已打开的窗口抢回来。
+  function openFile(filePath, content, { focus = true } = {}) {
     state.loaded = false;
     state.path = filePath;
     view.setState(EditorState.create({
@@ -535,14 +537,14 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
       extensions: extensionsFor(filePath),
     }));
     view.scrollDOM.scrollTop = 0;
-    view.focus();
+    if (focus) view.focus();
     state.loaded = true;
     attachVimEvents();
     updateVimMode();
     updateCursorPos();
   }
 
-  function revealPosition(line, character = 0) {
+  function revealPosition(line, character = 0, { focus = true } = {}) {
     if (!view) return;
     const doc = view.state.doc;
     const number = Math.min(Math.max(1, line), doc.lines);
@@ -552,7 +554,7 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
       selection: { anchor: position },
       effects: EditorView.scrollIntoView(position, { y: 'center' }),
     });
-    view.focus();
+    if (focus) view.focus();
   }
 
   function show() {

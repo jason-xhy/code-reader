@@ -120,7 +120,12 @@ export async function openHistoryEntry(entry, { silent = false } = {}) {
       : await api('/api/repositories/open-local', { method: 'POST', body: JSON.stringify({ path: entry.path, resume: true }) });
     await deps.loadRepository(data);
     if (data.resume?.file && state.files.includes(data.resume.file)) {
-      await deps.selectFile(data.resume.file, { line: data.resume.line || 1, character: data.resume.character || 0 });
+      // 静默恢复（页面加载）不抢已打开窗口的焦点；用户点历史条目仍把焦点交给代码窗。
+      await deps.selectFile(
+        data.resume.file,
+        { line: data.resume.line || 1, character: data.resume.character || 0 },
+        { focus: silent ? 'auto' : 'always' },
+      );
     }
     if (!silent) {
       showNotice(data.resume?.file

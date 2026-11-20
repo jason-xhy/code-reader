@@ -1355,6 +1355,30 @@ try {
   );
   await evaluate("document.querySelector('#dialog-close').click()");
 
+  // 回归（11-20）：刷新恢复期间打开代码树，恢复完成后焦点不能被编辑器抢走
+  // （openFile/revealPosition 曾在内容到达时无条件 view.focus()）。
+  await send('Page.navigate', { url: appUrl });
+  await waitFor('Boolean(window.__ts)', 30000);
+  const beforeHover = await evaluateJson("JSON.stringify({ current: window.__ts.snapshot().currentFile })");
+  await evaluate("document.querySelector('#sidebar-trigger').dispatchEvent(new PointerEvent('pointerenter')); true");
+  await sleep(150);
+  await waitFor('Boolean(window.__ts.snapshot().currentFile && window.__ts.snapshot().sourceLines > 0)', 45000);
+  await sleep(900);
+  const settledFocus = await evaluateJson(`JSON.stringify({
+    focus: document.activeElement?.id || '',
+    visible: document.querySelector('#app').classList.contains('sidebar-visible'),
+    current: window.__ts.snapshot().currentFile,
+  })`);
+  check(
+    beforeHover.current
+      ? '悬停打开代码树后焦点交给文件树'
+      : '恢复期间打开代码树：恢复完成后焦点仍在文件树',
+    settledFocus.focus === 'file-tree' && settledFocus.visible && Boolean(settledFocus.current),
+    JSON.stringify({ duringRestore: !beforeHover.current, settledFocus }),
+  );
+  await evaluate("document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'q', code: 'KeyQ', bubbles: true })); true");
+  await sleep(200);
+
   if (doSwitch && entries.length > 1) {
     const targetEntry = entries.find((entry) => entry.key !== activeEntry.key);
     // 切仓前重新取目标仓最新阅读位置，避免用户并发操作导致的假失败。

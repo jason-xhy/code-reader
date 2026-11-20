@@ -324,10 +324,11 @@ export async function restoreWorkspace() {
       const data = await openWorkspaceEntry(active, { resume: true, activate: true });
       await deps.loadRepository(data);
       if (data.resume?.file && state.files.includes(data.resume.file)) {
+        // 后台恢复：加载期间用户可能已打开代码树/解释窗口，焦点按实况决定。
         await deps.selectFile(data.resume.file, {
           line: data.resume.line || 1,
           character: data.resume.character || 0,
-        });
+        }, { focus: 'auto' });
       }
     } catch (error) {
       showNotice(`恢复工作区仓库 ${active.name} 失败：${error.message}`, { error: true });

@@ -86,7 +86,14 @@ if (savedTheme && (savedTheme === 'local' || THEMES.some((theme) => theme.id ===
 
 // ---- 阅读核心：打开仓库 / 选择文件 / 渲染源码 ----
 
-function renderSource() {
+// 两侧栏是「窗口」：窗口持有焦点时，后台内容到达不能把焦点抢回代码窗。
+// 与 layout.js 的「打开窗口即窗口持有焦点」配套——内容加载不是用户导航。
+function sidePanelOwnsFocus() {
+  const active = document.activeElement;
+  return Boolean(active?.closest?.('.sidebar, .insights'));
+}
+
+function renderSource({ focus = true } = {}) {
   state.historyController?.abort();
   elements.questionEditor.hidden = true;
   state.questionOpen = false;
@@ -94,7 +101,7 @@ function renderSource() {
   elements.codeEmpty.hidden = hasSource;
   if (hasSource) {
     editor.show();
-    editor.openFile(state.currentFile, state.source.content);
+    editor.openFile(state.currentFile, state.source.content, { focus });
   } else {
     editor.hide();
   }
@@ -104,7 +111,10 @@ function renderSource() {
     : '';
 }
 
-async function selectFile(filePath, reveal = null) {
+// focus: 'always' = 用户导航，加载完把焦点交给代码窗；
+//        'auto'   = 页面恢复等后台加载，只有没有别的窗口持有焦点时才接管。
+async function selectFile(filePath, reveal = null, { focus = 'always' } = {}) {
+  const background = focus === 'auto';
   if (!state.repository || (state.currentFile === filePath && !reveal)) return;
   const switching = state.currentFile !== filePath;
   state.currentFile = filePath;
@@ -126,7 +136,8 @@ async function selectFile(filePath, reveal = null) {
   }
   elements.currentFile.textContent = filePath;
   if (!switching) {
-    if (reveal) editor.revealPosition(reveal.line, reveal.character);
+    if (reveal) editor.revealPosition(reveal.line, reveal.character, { focus: !background });
+    if (background && !sidePanelOwnsFocus()) editor.focus();
     scheduleHistoryTouch();
     return;
   }
@@ -135,8 +146,10 @@ async function selectFile(filePath, reveal = null) {
     const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/file?path=${encodeURIComponent(filePath)}`);
     if (state.currentFile !== filePath) return;
     state.source = data;
-    renderSource();
-    if (reveal) editor.revealPosition(reveal.line, reveal.character);
+    renderSource({ focus: !background });
+    if (reveal) editor.revealPosition(reveal.line, reveal.character, { focus: !background });
+    // 恢复期间用户可能已打开代码树/解释窗口：内容到达后按实况决定焦点归属。
+    if (background && !sidePanelOwnsFocus()) editor.focus();
     const line = reveal?.line || 1;
     state.activeLine = line;
     pushReadingTrail({ path: filePath, line });
