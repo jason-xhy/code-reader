@@ -650,6 +650,19 @@ kbd { border: 1px solid #435064; border-bottom-width: 2px; border-radius: 4px; b
   color: var(--muted);
   font-size: 10px;
 }
+.quickpick-input {
+  margin: 6px 8px 0;
+  border: 1px solid #3f5874;
+  border-radius: 6px;
+  background: #101a27;
+  color: #d6e2f0;
+  padding: 6px 9px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  outline: none;
+}
+.quickpick-input:focus { border-color: var(--accent); }
+.quickpick-empty { padding: 14px 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .quickpick-body { display: flex; flex: 1; min-height: 0; }
 .quickpick-list { flex: 1; overflow: auto; padding: 6px; }
 .quickpick.has-preview .quickpick-list { flex: 0 0 32%; max-width: 320px; border-right: 1px solid var(--border); }
@@ -698,6 +711,11 @@ kbd { border: 1px solid #435064; border-bottom-width: 2px; border-radius: 4px; b
 .quickpick-row:hover, .quickpick-row.active { background: #1d3854; color: #8fc0ff; }
 .quickpick-index { color: #60738d; font-size: 10px; }
 .quickpick-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quickpick-target-search { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.quickpick-label { overflow: hidden; text-overflow: ellipsis; color: #8fc0ff; font-weight: 600; }
+.quickpick-kind { flex: none; border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; color: var(--muted); font-size: 10px; }
+.quickpick-kind-function { border-color: #2f5b3c; color: #9fe0b0; }
+.quickpick-location { flex: none; margin-left: auto; color: #6f8195; font-size: 10px; }
 .question-editor {
   position: absolute;
   right: 16px;
@@ -1108,6 +1126,8 @@ input[readonly] { color: #8391a4; background: #111821; }
   cursor: pointer;
 }
 .commit-subject { color: #bdc9d6; }
+.commit.commit-dirty { cursor: default; }
+.commit.commit-dirty .commit-subject { color: var(--muted); font-style: italic; }
 .commit-detail summary { cursor: pointer; color: #8fb9e8; font-size: 10px; }
 
 /* 阅读路径 */

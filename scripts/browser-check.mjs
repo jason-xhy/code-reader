@@ -1035,6 +1035,10 @@ try {
   await pressRealKey('Escape', 'Escape', 27);
   await waitFor("!document.querySelector('dialog[open]')", 5000);
 
+  // 隐藏面板是 inert 的（防止焦点落进屏幕外）：先模拟鼠标移到左边缘滑出面板，
+  // 再聚焦过滤框；聚焦期间面板应保持展开，失焦后自动收起。
+  await evaluate("window.__crPanels?.unpin('sidebar'); window.__crPanels?.hide('sidebar'); document.querySelector('#sidebar-trigger').dispatchEvent(new PointerEvent('pointerenter', { bubbles: true })); true");
+  await sleep(80);
   await evaluate("document.querySelector('#tree-filter').focus(); true");
   await sleep(260);
   const sidebarFocused = await panelState();
@@ -1107,6 +1111,68 @@ try {
   check('引用列表 gg/G 跳到首/末项', quickpickLast === 3 && quickpickFirst === 0, JSON.stringify({ quickpickLast, quickpickFirst }));
   await evaluate("document.querySelector('#quickpick').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true");
   await sleep(150);
+
+  // #6b 工作区搜索（Ctrl+Alt+P）：输入框 + 完全匹配优先 + 复用 gr 引用窗预览。
+  const searchSeed = await snapshot();
+  const currentBase = String(searchSeed.currentFile || '').split('/').pop();
+  const currentSymbol = searchSeed.history?.symbol || '';
+  await dispatchKey('KeyP', 'p', { ctrlKey: true, altKey: true });
+  await waitFor("Boolean(document.querySelector('#quickpick .quickpick-input'))", 5000);
+  const searchInputFocused = await evaluate("document.activeElement === document.querySelector('.quickpick-input')");
+  await evaluate(`(() => { const input = document.querySelector('.quickpick-input'); input.value = ${JSON.stringify(currentBase)}; input.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  await waitFor("document.querySelectorAll('#quickpick .quickpick-row').length > 0", 20000);
+  const fileSearch = await evaluateJson(`JSON.stringify({
+    label: document.querySelector('#quickpick .quickpick-row .quickpick-label')?.textContent || '',
+    kind: document.querySelector('#quickpick .quickpick-row .quickpick-kind')?.textContent || '',
+    title: document.querySelector('#quickpick .quickpick-heading')?.textContent || '',
+  })`);
+  check(
+    '工作区搜索：文件名完全匹配优先',
+    searchInputFocused && fileSearch.label === currentBase && fileSearch.kind.includes('文件'),
+    JSON.stringify({ currentBase, searchInputFocused, fileSearch }),
+  );
+  if (currentSymbol) {
+    await evaluate(`(() => { const input = document.querySelector('.quickpick-input'); input.value = ${JSON.stringify(currentSymbol)}; input.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    await waitFor(`document.querySelector('#quickpick .quickpick-row .quickpick-label')?.textContent === ${JSON.stringify(currentSymbol)}`, 20000);
+    await waitFor("document.querySelector('#quickpick .quickpick-preview')?.textContent.includes('Caller')", 15000);
+    const functionSearch = await evaluateJson(`JSON.stringify({
+      label: document.querySelector('#quickpick .quickpick-row .quickpick-label')?.textContent || '',
+      kind: document.querySelector('#quickpick .quickpick-row .quickpick-kind')?.textContent || '',
+      location: document.querySelector('#quickpick .quickpick-row .quickpick-location')?.textContent || '',
+      preview: document.querySelector('#quickpick .quickpick-preview')?.textContent.slice(0, 120) || '',
+    })`);
+    check(
+      '工作区搜索：函数完全匹配优先并带引用窗预览',
+      functionSearch.label === currentSymbol && functionSearch.kind.includes('函数') && functionSearch.preview.includes('Caller'),
+      JSON.stringify({ currentSymbol, functionSearch }),
+    );
+    const separator = functionSearch.location.lastIndexOf(':');
+    const targetPath = separator > 0 ? functionSearch.location.slice(0, separator) : '';
+    const targetLine = separator > 0 ? Number(functionSearch.location.slice(separator + 1)) : 0;
+    await evaluate("document.querySelector('#quickpick .quickpick-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true })); true");
+    await sleep(500);
+    const afterSearchJump = await snapshot();
+    check(
+      '工作区搜索：Enter 跳转到选中函数定义',
+      Boolean(targetPath) && afterSearchJump.currentFile === targetPath && afterSearchJump.activeLine === targetLine,
+      JSON.stringify({ targetPath, targetLine, after: { file: afterSearchJump.currentFile, line: afterSearchJump.activeLine } }),
+    );
+  } else {
+    await evaluate("document.querySelector('#quickpick .quickpick-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); true");
+  }
+  // 输入框聚焦时 j/k 是搜索词；列表导航用 Ctrl+j/k 或 ↑/↓。
+  await dispatchKey('KeyP', 'p', { ctrlKey: true, altKey: true });
+  await waitFor("Boolean(document.querySelector('.quickpick-input'))", 5000);
+  await evaluate("(() => { const input = document.querySelector('.quickpick-input'); input.value = 'e'; input.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
+  await waitFor("document.querySelectorAll('#quickpick .quickpick-row').length >= 2", 15000);
+  await evaluate("document.querySelector('.quickpick-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'j', code: 'KeyJ', ctrlKey: true, bubbles: true, cancelable: true })); true");
+  await sleep(150);
+  const ctrlJActive = await evaluate("[...document.querySelectorAll('#quickpick .quickpick-row')].findIndex((row) => row.classList.contains('active'))");
+  await evaluate("document.querySelector('.quickpick-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true, cancelable: true })); true");
+  await sleep(150);
+  const ctrlKActive = await evaluate("[...document.querySelectorAll('#quickpick .quickpick-row')].findIndex((row) => row.classList.contains('active'))");
+  check('工作区搜索：Ctrl+j/k 在输入框内选择结果', ctrlJActive === 1 && ctrlKActive === 0, JSON.stringify({ ctrlJActive, ctrlKActive }));
+  await evaluate("document.querySelector('.quickpick-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); true");
 
   // #7 nvim 占位：工具条紧凑、无底部重复状态栏、终端占满代码区。
   await evaluate("document.querySelector('#tab-nvim').click(); true");

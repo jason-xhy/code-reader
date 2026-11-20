@@ -260,7 +260,7 @@ function whitespaceExtension(options) {
   return [plugin];
 }
 
-export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoReferences, onJumpBack, onJumpForward, onFocusTree, onOpenFile, onExComplete, onHelp, theme = 'one-dark', profile = null }) {
+export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoReferences, onJumpBack, onJumpForward, onFocusTree, onOpenFile, onExComplete, onHelp, onWorkspaceSearch, theme = 'one-dark', profile = null }) {
   const host = document.getElementById('editor-host');
   const mount = document.getElementById('editor');
   const quickpick = document.getElementById('quickpick');
@@ -313,6 +313,11 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     quickpickPreviewLoader: null,
     quickpickPreview: null,
     quickpickPreviewToken: 0,
+    // 搜索型 quickpick：标题下方的输入框、空态文案与会话标识。
+    quickpickInput: null,
+    quickpickInputElement: null,
+    quickpickEmptyText: '',
+    quickpickSession: null,
   };
   let cursorTimer = null;
   let view = null;
@@ -329,6 +334,10 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     if (typeof onFocusTree === 'function') onFocusTree();
   });
   Vim.mapCommand('\\e', 'action', 'readerFocusTree', undefined, { context: 'normal' });
+  Vim.defineAction('readerWorkspaceSearch', () => {
+    if (typeof onWorkspaceSearch === 'function') onWorkspaceSearch();
+  });
+  Vim.mapCommand('\\s', 'action', 'readerWorkspaceSearch', undefined, { context: 'normal' });
 
   // Ctrl-o / Ctrl-i：优先走应用级跳转栈（跨文件 gd/gr 有效）；栈空时回退到
   // codemirror-vim 自带的 jumplist（G/gg/搜索等 vim 动作）。
@@ -356,6 +365,8 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   Vim.defineEx('ask', 'ask', () => onAsk());
   Vim.defineEx('gd', 'gd', () => onGotoDefinition());
   Vim.defineEx('gr', 'gr', () => onGotoReferences());
+  Vim.defineEx('grep', 'grep', () => onWorkspaceSearch());
+  Vim.defineEx('search', 'search', () => onWorkspaceSearch());
   Vim.defineEx('help', 'h', () => {
     if (typeof onHelp === 'function') onHelp();
   });
@@ -373,8 +384,8 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   });
 
   const EX_COMMAND_NAMES = [
-    'ask', 'colorscheme', 'e', 'edit', 'gd', 'gr', 'help', 'map', 'nmap', 'norm',
-    'q', 'qa', 'set', 'sort', 'tree', 'vi', 'vmap', 'vsplit', 'w', 'wq',
+    'ask', 'colorscheme', 'e', 'edit', 'gd', 'gr', 'grep', 'help', 'map', 'nmap', 'norm',
+    'q', 'qa', 'search', 'set', 'sort', 'tree', 'vi', 'vmap', 'vsplit', 'w', 'wq',
   ];
   const FILE_EX_COMMANDS = new Set(['e', 'edit', 'vi', 'vsplit']);
   function exCompletions(value) {
@@ -561,6 +572,52 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     return view.state.doc.toString();
   }
 
+  function renderQuickpickRow(item, index) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `quickpick-row${index === state.quickpickIndex ? ' active' : ''}`;
+    const indexElement = document.createElement('span');
+    indexElement.className = 'quickpick-index';
+    indexElement.textContent = String(index + 1);
+    const target = document.createElement('span');
+    target.className = `quickpick-target${item.label ? ' quickpick-target-search' : ''}`;
+    if (item.label) {
+      // 工作区搜索：函数名/文件名 + 类型 + 位置，完全匹配已在服务端排前。
+      const label = document.createElement('span');
+      label.className = 'quickpick-label';
+      label.textContent = item.label;
+      const kind = document.createElement('span');
+      kind.className = `quickpick-kind quickpick-kind-${item.kind || 'file'}`;
+      kind.textContent = item.detail || '';
+      const location = document.createElement('span');
+      location.className = 'quickpick-location';
+      location.textContent = `${item.path}:${item.line}`;
+      target.append(label, kind, location);
+    } else {
+      target.textContent = `${item.path}:${item.line}:${item.character + 1}`;
+    }
+    row.append(indexElement, target);
+    row.addEventListener('click', () => pickQuickpick(index));
+    row.addEventListener('mouseenter', () => setQuickpickIndex(index));
+    return row;
+  }
+
+  function renderQuickpickList() {
+    const list = quickpick.querySelector('.quickpick-list');
+    if (!list) return;
+    const items = state.quickpickItems || [];
+    list.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'quickpick-empty';
+      empty.textContent = state.quickpickEmptyText
+        || (state.quickpickInput ? '输入关键字开始搜索…' : '没有可选项');
+      list.append(empty);
+      return;
+    }
+    items.forEach((item, index) => list.append(renderQuickpickRow(item, index)));
+  }
+
   function renderQuickpick() {
     const items = state.quickpickItems || [];
     quickpick.replaceChildren();
@@ -569,25 +626,26 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     heading.textContent = state.quickpickTitle
       || `${items.length} 个跳转目标 · ↑↓ 选择 · Enter 跳转 · Esc 取消`;
     quickpick.append(heading);
+    state.quickpickInputElement = null;
+    if (state.quickpickInput) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'quickpick-input';
+      input.placeholder = state.quickpickInput.placeholder || '搜索…';
+      input.value = state.quickpickInput.value || '';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.addEventListener('input', () => {
+        state.quickpickInput.value = input.value;
+        if (typeof state.quickpickInput.onChange === 'function') state.quickpickInput.onChange(input.value);
+      });
+      state.quickpickInputElement = input;
+      quickpick.append(input);
+    }
     const body = document.createElement('div');
     body.className = 'quickpick-body';
     const list = document.createElement('div');
     list.className = 'quickpick-list';
-    items.forEach((item, index) => {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = `quickpick-row${index === state.quickpickIndex ? ' active' : ''}`;
-      const indexElement = document.createElement('span');
-      indexElement.className = 'quickpick-index';
-      indexElement.textContent = String(index + 1);
-      const target = document.createElement('span');
-      target.className = 'quickpick-target';
-      target.textContent = `${item.path}:${item.line}:${item.character + 1}`;
-      row.append(indexElement, target);
-      row.addEventListener('click', () => pickQuickpick(index));
-      row.addEventListener('mouseenter', () => setQuickpickIndex(index));
-      list.append(row);
-    });
     body.append(list);
     if (state.quickpickPreviewLoader) {
       const preview = document.createElement('div');
@@ -596,6 +654,7 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
       body.append(preview);
     }
     quickpick.append(body);
+    renderQuickpickList();
   }
 
   // 引用预览的另一窗口：显示选中引用前后 10 行，并标出所在函数（Caller）。
@@ -603,7 +662,9 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     const preview = state.quickpickPreview;
     container.classList.toggle('pending', Boolean(preview?.pending));
     if (!preview || preview.status === 'loading') {
-      container.textContent = '正在读取引用上下文…';
+      container.textContent = state.quickpickInput && !preview
+        ? '输入关键字后显示上下文预览'
+        : '正在读取引用上下文…';
       return;
     }
     if (preview.status === 'error') {
@@ -708,7 +769,8 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     state.quickpickIndex = ((index % items.length) + items.length) % items.length;
     updateQuickpickSelection();
     if (state.quickpickPreviewLoader) loadQuickpickPreview(state.quickpickIndex);
-    quickpick.focus();
+    // 搜索型 quickpick 的焦点属于输入框；列表导航不能把焦点抢走。
+    if (!state.quickpickInputElement) quickpick.focus();
   }
 
   function showQuickpick(items, onPick, options = {}) {
@@ -719,20 +781,54 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     state.quickpickPreviewLoader = typeof options.preview === 'function' ? options.preview : null;
     state.quickpickPreview = null;
     state.quickpickPreviewToken += 1;
+    state.quickpickInput = options.input || null;
+    state.quickpickInputElement = null;
+    state.quickpickEmptyText = options.emptyText || '';
+    state.quickpickSession = options.sessionId || null;
     quickpick.classList.toggle('has-preview', Boolean(state.quickpickPreviewLoader));
     renderQuickpick();
     quickpick.hidden = false;
     quickpick.tabIndex = -1;
-    quickpick.focus();
+    if (state.quickpickInputElement) state.quickpickInputElement.focus();
+    else quickpick.focus();
     if (state.quickpickPreviewLoader) loadQuickpickPreview(0);
+  }
+
+  // 搜索输入变化后只重建列表，保留输入框焦点与光标位置。
+  function updateQuickpickItems(items, options = {}) {
+    if (!state.quickpickItems) return false;
+    // 会话标识必须完全一致：搜索请求慢返回时不能覆盖后来打开的引用列表。
+    if (options.sessionId && options.sessionId !== state.quickpickSession) return false;
+    state.quickpickItems = Array.isArray(items) ? items : [];
+    state.quickpickIndex = 0;
+    if (typeof options.title === 'string') {
+      state.quickpickTitle = options.title;
+      const heading = quickpick.querySelector('.quickpick-heading');
+      if (heading) heading.textContent = options.title;
+    }
+    if (typeof options.emptyText === 'string') state.quickpickEmptyText = options.emptyText;
+    renderQuickpickList();
+    if (state.quickpickPreviewLoader) {
+      state.quickpickPreviewToken += 1;
+      state.quickpickPreview = null;
+      if (state.quickpickItems.length) loadQuickpickPreview(0);
+      else updateQuickpickPreview();
+    }
+    return true;
+  }
+
+  function isQuickpickOpen() {
+    return Boolean(state.quickpickItems) && !quickpick.hidden;
   }
 
   function pickQuickpick(index) {
     const items = state.quickpickItems || [];
     const callback = state.quickpickOnPick;
     const item = items[index];
+    // 搜索无结果时 Enter 不应关闭面板；只有真正选中一项才跳转。
+    if (!item) return;
     closeQuickpick();
-    if (item && callback) callback(item);
+    if (callback) callback(item);
   }
 
   function closeQuickpick() {
@@ -742,6 +838,10 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     state.quickpickPreviewLoader = null;
     state.quickpickPreview = null;
     state.quickpickPreviewToken += 1;
+    state.quickpickInput = null;
+    state.quickpickInputElement = null;
+    state.quickpickEmptyText = '';
+    state.quickpickSession = null;
     quickpick.hidden = true;
     quickpick.classList.remove('has-preview');
     quickpick.replaceChildren();
@@ -752,6 +852,16 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     const items = state.quickpickItems;
     if (!items) return false;
     if (event.defaultPrevented) return true;
+    // 搜索输入框聚焦时，字符键属于输入（j/k/数字/Ctrl+d 等都不要当导航）；
+    // 只保留列表导航键。
+    const typing = event.target instanceof HTMLInputElement
+      && event.target.classList.contains('quickpick-input');
+    // 输入框里字符键属于搜索词；列表导航用 ↑/↓、PageUp/PageDown，或 Ctrl+j/k。
+    const navigationKey = ['Escape', 'ArrowDown', 'ArrowUp', 'Enter', 'PageDown', 'PageUp'].includes(event.key)
+      || (event.ctrlKey && (event.key === 'j' || event.key === 'k'));
+    if (typing && !navigationKey) {
+      return true;
+    }
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
@@ -986,6 +1096,8 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     openFile,
     revealPosition,
     showQuickpick,
+    updateQuickpickItems,
+    isQuickpickOpen,
     closeQuickpick,
     quickpickKeydown,
     getCursor,

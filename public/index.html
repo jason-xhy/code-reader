@@ -78,7 +78,7 @@
           <kbd>Ctrl + Alt + B</kbd>
           <span>打开代码树</span>
         </button>
-        <span class="code-nav-extra" title="全键盘跳转：给可操作元素与代码行打标签；两字符定位：输入两个字符后跳转到匹配处（Ctrl+Alt+L 被系统锁屏占用，改用 F）">Ctrl+Alt+K 全键盘跳转 · Ctrl+Alt+F 两字符定位</span>
+        <span class="code-nav-extra" title="全键盘跳转：给可操作元素与代码行打标签；两字符定位：输入两个字符后跳转到匹配处（Ctrl+Alt+L 被系统锁屏占用，改用 F）；工作区搜索：按函数名或文件名模糊搜索（Ctrl+Alt+P）">Ctrl+Alt+K 全键盘跳转 · Ctrl+Alt+F 两字符定位 · Ctrl+Alt+P 工作区搜索</span>
         <button id="nav-insights" class="code-nav-hint code-nav-hint-right" type="button" title="Ctrl+Alt+I 去代码解释窗口/收起（焦点已在窗口内时再按收起；若被输入法占用可用 Ctrl+Alt+Shift+I）">
           <kbd>Ctrl + Alt + I</kbd>
           <span>打开代码解释窗口</span>
@@ -103,7 +103,7 @@
         <div id="code-empty" class="code-empty">
           <div class="empty-mark">&lt;/&gt;</div>
           <h1>从代码树选择一个文件</h1>
-          <p>光标移动即可查看当前函数的提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用（列表选中项显示前后 10 行与 Caller），<kbd>Ctrl-o</kbd> 跳回，<kbd>\e</kbd> 聚焦文件树，<kbd>\c</kbd> 就当前行提问。</p>
+          <p>光标移动即可查看当前函数的提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用（列表选中项显示前后 10 行与 Caller），<kbd>\s</kbd> 或 <kbd>Ctrl+Alt+P</kbd> 在工作区搜索函数/文件名，<kbd>Ctrl-o</kbd> 跳回，<kbd>\e</kbd> 聚焦文件树，<kbd>\c</kbd> 就当前行提问。</p>
           <p>编辑器为完整 Vim 模式（<kbd>i</kbd>/<kbd>Esc</kbd> 切换，<kbd>/</kbd> 搜索，<kbd>u</kbd> 撤销，<kbd>:help</kbd> 查看全部快捷键）；修改仅保存在内存，不会写回磁盘。</p>
         </div>
         <div id="editor-host" class="editor-host" tabindex="0" hidden>
@@ -112,8 +112,8 @@
           <div class="statusbar">
             <span id="vim-mode" class="vim-mode">--NORMAL--</span>
             <span id="cursor-pos" class="cursor-pos">1:1</span>
-            <span id="editor-note" class="editor-note">Vim 模式 · gd 跳定义 · gr 引用预览 · Ctrl-o 跳回 · \c 提问 · :help 快捷键 · 修改仅内存</span>
-            <span id="panel-shortcuts" class="editor-note panel-shortcuts" title="焦点在面板内时再按一次收起；K/F 为键盘跳转（F 代替被系统锁屏占用的 L）">Ctrl+Alt+B 代码树 · Ctrl+Alt+I 分析 · Ctrl+Alt+K 跳转 · Ctrl+Alt+F 两字符</span>
+            <span id="editor-note" class="editor-note">Vim 模式 · gd 跳定义 · gr 引用预览 · \s 工作区搜索 · Ctrl-o 跳回 · \c 提问 · :help 快捷键 · 修改仅内存</span>
+            <span id="panel-shortcuts" class="editor-note panel-shortcuts" title="焦点在面板内时再按一次收起；K/F 为键盘跳转（F 代替被系统锁屏占用的 L）；P 为工作区搜索">Ctrl+Alt+B 代码树 · Ctrl+Alt+I 分析 · Ctrl+Alt+K 跳转 · Ctrl+Alt+F 两字符 · Ctrl+Alt+P 搜索</span>
             <span id="lsp-state" class="lsp-state">LSP 未检测</span>
           </div>
         </div>
@@ -381,7 +381,7 @@
       </section>
       <section>
         <h3>本应用扩展</h3>
-        <p><kbd>gd</kbd> LSP 跳定义（也支持 <kbd>Ctrl-]</kbd>）· <kbd>gr</kbd> 查找引用 · <kbd>\e</kbd> 聚焦文件树（<kbd>j</kbd><kbd>k</kbd> 选择、<kbd>gg</kbd><kbd>G</kbd> 首个/最后一个文件、<kbd>Enter</kbd> 打开、<kbd>q</kbd> 返回）· <kbd>\c</kbd> 就当前行向 LLM 提问 · <kbd>:e</kbd> <kbd>:vi</kbd> 按路径打开文件（<kbd>Tab</kbd> 补全）· <kbd>:ask</kbd> <kbd>:gd</kbd> <kbd>:gr</kbd> <kbd>:tree</kbd> <kbd>:help</kbd> · <kbd>Ctrl+Alt+B</kbd> 去代码树/收起 · <kbd>Ctrl+Alt+I</kbd> 去解释窗口/收起 · <kbd>Ctrl+Alt+K</kbd> 给可操作元素与代码行打标签跳转（easymotion 风格）· <kbd>Ctrl+Alt+F</kbd> 输入两个字符定位（sneak 风格；L 被系统锁屏占用）</p>
+        <p><kbd>gd</kbd> LSP 跳定义（也支持 <kbd>Ctrl-]</kbd>）· <kbd>gr</kbd> 查找引用 · <kbd>\s</kbd> 工作区搜索函数/文件名（完全匹配优先，复用引用窗口）· <kbd>\e</kbd> 聚焦文件树（<kbd>j</kbd><kbd>k</kbd> 选择、<kbd>gg</kbd><kbd>G</kbd> 首个/最后一个文件、<kbd>Enter</kbd> 打开、<kbd>q</kbd> 返回）· <kbd>\c</kbd> 就当前行向 LLM 提问 · <kbd>:e</kbd> <kbd>:vi</kbd> 按路径打开文件（<kbd>Tab</kbd> 补全）· <kbd>:ask</kbd> <kbd>:gd</kbd> <kbd>:gr</kbd> <kbd>:grep</kbd> <kbd>:search</kbd> <kbd>:tree</kbd> <kbd>:help</kbd> · <kbd>Ctrl+Alt+P</kbd> 工作区搜索（任意窗口）· <kbd>Ctrl+Alt+B</kbd> 去代码树/收起 · <kbd>Ctrl+Alt+I</kbd> 去解释窗口/收起 · <kbd>Ctrl+Alt+K</kbd> 给可操作元素与代码行打标签跳转（easymotion 风格）· <kbd>Ctrl+Alt+F</kbd> 输入两个字符定位（sneak 风格；L 被系统锁屏占用）</p>
       </section>
       <section>
         <h3>全键盘导航</h3>

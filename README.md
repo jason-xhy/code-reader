@@ -12,6 +12,7 @@
 - 侧栏快捷键：`Ctrl+Alt+B` 去代码树，`Ctrl+Alt+I` 去「分析与解释」——面板已打开但焦点在代码区时，按一下把焦点送进面板（不关闭）；焦点已在面板内时再按一次才收起。面板打开后钉住，鼠标移开不收回；键盘焦点在面板内（含鼠标点击解释窗口后）也保持展开。编辑器状态栏与 nvim 工具条直接显示这两个组合键。代码窗口上方左侧显示「← Ctrl+Alt+B 打开代码树」，右侧显示「Ctrl+Alt+I 打开代码解释窗口 →」，点击箭头提示也可进/出面板
 - 全键盘导航（easymotion / sneak 风格）：任意窗口按 `Ctrl+Alt+K` 给所有可操作元素与代码行打字母标签，输入标签即点击/聚焦（代码行则把光标移到该行）；按 `Ctrl+Alt+F` 输入两个字符，视口内匹配处出现标签，输入标签即跳转（`Ctrl+Alt+L` 被 UKUI 系统锁屏占用，故改用 F）。标签层自动限定在当前顶层窗口（原生对话框、提交详情、引用列表），不会点到遮罩后面的元素；打开侧栏/对话框后焦点自动跟进；历史菜单/文件树右键菜单支持 ↑/↓ + Enter，Esc 返回；分隔条聚焦后 ←/→ 调整宽度
 - 任意窗口 Vim 键（解释栏 / 提交详情 / 所有对话框 / 菜单）：`j`/`k` 在可操作项之间移动，或（焦点在阅读容器上时）逐行滚动，支持计数（`5j`）；`Ctrl+d`/`Ctrl+u` 半屏、`Ctrl+f`/`Ctrl+b`/`PageDown`/`PageUp` 整屏（阅读区还可用 `Space`/`Shift+Space`）；`gg`/`G` 跳到首个/最后一个目标，`12gg`/`12G` 跳到第 12 个，阅读区则为顶部/底部；`H`/`M`/`L` 首/中/末项（阅读区为顶部/中部/底部）；`0`/`^`/`$` 首/末项（阅读区横向滚到最左/最右）；`o` 激活当前项，`Enter` 走浏览器原生激活（提交详情里先 `j` 到「Diff」再 `Enter` 展开）；`/` 在当前窗口内搜索，`Enter` 定位，`n`/`N` 下一个/上一个，`Esc` 清除高亮并回到阅读模式。解释栏打开后默认是阅读模式，`Tab` 或点击链接进入项列表模式，`Esc` 先退回阅读模式再回编辑器；文件树与引用列表同样支持计数与翻屏，文件树里 `/` 直接跳到过滤框
+- 工作区搜索：`Ctrl+Alt+P`（任意窗口）或 Vim `\s` / `:grep` / `:search`，按函数名或文件名模糊搜索整个仓库；**完全匹配排在前**，前缀匹配其次，部分匹配在后；结果复用 `gr` 的引用窗口（左侧列表 + 右侧前后 10 行上下文预览），`↑`/`↓`（或 `Ctrl+j`/`Ctrl+k`）选择、`Enter` 跳转、`Esc` 取消。函数搜索基于 `git grep` + 定义形态识别，支持 C/C++/汇编/JS/TS/Python/Go/Rust/Java/Shell 等，扩展名清单在 `src/search/config.js`
 - 若 `Ctrl+Alt+B` / `Ctrl+Alt+I` 被输入法或桌面全局快捷键抢占，可用备用键 `Ctrl+Alt+Shift+B` / `Ctrl+Alt+Shift+I`。常见冲突：fcitx 虚拟键盘默认使用 `Ctrl+Alt+B`，在 `~/.config/fcitx/config` 的 `[Hotkey]` 中设置 `VKSwitchKey=` 并执行 `fcitx-remote -r` 即可释放
 - CodeMirror 6 编辑器，支持 Vim 模式（宏、寄存器、marks、`:s`、`:g`、`:norm` 等）
 - nvim 面板：在浏览器内运行本地 `nvim`/`vim`（node-pty + xterm.js），直接使用你的配置与全部插件；打开面板时带入当前文件与行号，之后切文件不打扰 nvim，可点「打开当前文件」同步；编辑器 ⇄ nvim 页签用 `Ctrl+Alt+1` / `Ctrl+Alt+2` 切换（页签内直接标出组合键；兼容 `Ctrl+Alt+E` / `Ctrl+Alt+N`，但部分桌面把 `Ctrl+Alt+E` 注册为全局快捷键，会拦截该组合）。nvim 工具条已压缩并去掉底部重复状态栏，终端占满代码区
@@ -35,6 +36,32 @@
 - 解释结果自动记录为 FAQ，按函数/代码段命中；列表只显示问题，点击展开完整解释；代码或 HEAD 变化后条目标记「已过期」并给出原因，可一键按当前代码重问
 - 规范核实状态由本地文档检索结果决定（来源+章节同时命中才算已核实），不信任模型自述
 - 主题与字体：默认选中「本地」主题（按本地 nvim colorscheme 与 treesitter 高亮组生成），并同步本地终端/桌面等宽字体到编辑器与 nvim 面板；另有 8 套内置 Vim 配色，三栏宽度可拖拽
+
+## 架构
+
+代码按「配置 / 数据 / 策略 / 能力 / 装配」分层，新增功能不需要改大文件：
+
+```
+server.js                 装配层：配置 + 路由表 + 静态资源 + 错误边界
+src/config.js             应用配置（端口、请求体上限、静态文件白名单）
+src/http/                 传输层（JSON 读写、静态文件、路由分发）
+src/policies/request.js   请求参数策略（行号/列号/路径/字符串校验）
+src/routes/*.js           服务端能力：每个文件一组 API（editor/source/lsp/faq/search/...）
+src/search/               工作区搜索能力：config / query 策略 / definitions 策略 / ranking 策略 / service
+src/*.js                  Git、LSP、LLM、文档、FAQ、工作区等基础服务
+public/core/              前端配置、DOM 句柄、运行时状态、API、通用工具、布局与交互策略
+public/features/*.js      前端能力模块：tree / workspace / insights / navigation / search / dialogs / shortcuts ...
+public/app.js             前端装配层：创建编辑器、注入依赖、初始化能力模块
+scripts/check-syntax.mjs  语法检查：遍历源码目录，新增模块无需改 package.json
+```
+
+扩展方式：
+
+- **新增后端能力**：在 `src/routes/` 加一个 `{ method, pattern, handler }` 路由组，在 `server.js` 的路由表注册；参数校验放 `src/policies/`，配置放 `src/config.js` 或能力自己的 config。
+- **新增前端能力**：在 `public/features/` 新建 `initXFeature(deps)` 模块，在 `app.js` 注入跨模块依赖并初始化；共享状态只从 `public/core/state.js` 读写。
+- **扩展搜索**：改 `src/search/config.js` 的 `sourceGlobs` 增加语言；改 `src/search/definitions.js` 增加定义识别规则；改 `src/search/ranking.js` 调整完全匹配/前缀/部分的排序。
+
+搜索接口：`GET /api/repositories/:id/search?q=<关键词>`，返回 `{ query, head, results: [{ kind, name, path, line, character, match }], counts, truncated }`，`match` 为 `exact` / `prefix` / `partial`。
 
 ## 环境要求
 

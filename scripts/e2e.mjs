@@ -2,7 +2,7 @@
 // grill: 成品检索=skill 库无 code-reader e2e 成品; 输入固定=临时 bare 仓库+固定 API 路径; 步骤机械=建仓/调 API/断言; 判读固定=HTTP 200 与字段值; 失效场景=构造不出（仅本应用）
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,8 @@ import { searchSymbolDefinitions, wordAt } from '../src/symbol-search.js';
 import { buildUnderstandingContext } from '../src/understanding.js';
 import { parseAnimation, wantsAnimation } from '../src/animation.js';
 import { createAnimationHtml } from '../public/animation-html.js';
+import { definitionInfo, definitionName } from '../src/search/definitions.js';
+import { matchRank } from '../src/search/ranking.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const base = 'http://127.0.0.1:8799';
@@ -41,6 +43,22 @@ function fail(message) {
 function assert(condition, message, detail = '') {
   if (condition) pass(message);
   else fail(`${message}${detail ? ` :: ${detail}` : ''}`);
+}
+
+// 前端已按 core/features 分层：静态断言读取整个 public/ 下的应用脚本，
+// 避免检查绑定在单个 app.js 文件上。
+function readFrontendSources(dir = path.join(repoRoot, 'public')) {
+  const parts = [];
+  for (const entry of readdirSync(dir)) {
+    if (entry === 'vendor') continue;
+    const absolute = path.join(dir, entry);
+    if (statSync(absolute).isDirectory()) {
+      parts.push(readFrontendSources(absolute));
+    } else if (/\.m?js$/.test(entry)) {
+      parts.push(readFileSync(absolute, 'utf8'));
+    }
+  }
+  return parts.join('\n');
 }
 
 function git(cwd, ...args) {
@@ -373,6 +391,7 @@ try {
   // 旧版外部 viewer 动画 API 已由新版内嵌 Three.js 动画（parseAnimation/createAnimationHtml）取代。
 
   writeFileSync(path.join(work, 'sample.h'), 'struct demo_event {\n\tint value;\n};\n');
+  writeFileSync(path.join(work, 'demo_handle_notes.md'), 'demo_handle notes\n');
   writeFileSync(path.join(work, 'sample.c'), [
     '#include "sample.h"',
     '',
@@ -387,9 +406,67 @@ try {
     '\tdemo_handle(&event);',
     '}',
   ].join('\n') + '\n');
-  git(work, 'add', 'sample.c', 'sample.h');
+  git(work, 'add', 'sample.c', 'sample.h', 'demo_handle_notes.md');
   git(work, 'commit', '-m', 'sample-symbols');
   const sampleContent = readFileSync(path.join(work, 'sample.c'), 'utf8');
+
+  // 工作区搜索：完全匹配的函数排第一；文件名部分匹配排在其后。
+  const searchExact = await api('GET', `${repoBase}/search?q=demo_handle`);
+  const firstResult = searchExact.data.results?.[0];
+  const fileResultIndex = searchExact.data.results?.findIndex((item) => item.kind === 'file' && item.path === 'demo_handle_notes.md') ?? -1;
+  assert(
+    searchExact.status === 200
+    && firstResult?.kind === 'function'
+    && firstResult?.name === 'demo_handle'
+    && firstResult?.match === 'exact'
+    && firstResult?.character === 'static void '.length,
+    '工作区搜索：完全匹配的函数排第一',
+    JSON.stringify(searchExact.data.results?.slice(0, 3)),
+  );
+  assert(fileResultIndex > 0, '工作区搜索：文件名部分匹配排在完全匹配之后', `index=${fileResultIndex}`);
+  const searchPartial = await api('GET', `${repoBase}/search?q=${encodeURIComponent('demo_')}`);
+  assert(
+    searchPartial.data.results?.filter((item) => item.kind === 'function').length === 2,
+    '工作区搜索：部分匹配返回全部命中函数',
+    JSON.stringify(searchPartial.data.results?.filter((item) => item.kind === 'function')),
+  );
+  const searchEmpty = await api('GET', `${repoBase}/search?q=`);
+  assert(searchEmpty.status === 400, '工作区搜索：空关键字返回 400', `status=${searchEmpty.status}`);
+  writeFileSync(path.join(work, 'untracked_search.c'), 'static void untracked_fn(void)\n{\n}\n');
+  const searchUntracked = await api('GET', `${repoBase}/search?q=untracked_fn`);
+  assert(
+    searchUntracked.data.results?.some((item) => item.kind === 'function'
+      && item.name === 'untracked_fn'
+      && item.path === 'untracked_search.c'),
+    '工作区搜索：未跟踪源码文件也能命中',
+    JSON.stringify(searchUntracked.data.results),
+  );
+  const typedInfo = definitionInfo('struct foo_t *foo(void)');
+  assert(
+    definitionName('static int foo(struct x *p)') === 'foo'
+    && typedInfo?.name === 'foo'
+    && typedInfo?.index === 'struct foo_t *'.length
+    && definitionName('int bar(void);') === null
+    && definitionName('#define MAX(a,b) ((a)>(b)?(a):(b))') === null
+    && definitionName('if (x) {') === null
+    && definitionName('while (x) {') === null
+    && definitionName('for (i = 0; i < 3; i++) {') === null
+    && definitionName('__attribute__((noreturn))') === null
+    && definitionName('EXPORT_SYMBOL(foo)') === null
+    && definitionName('SYM_FUNC_START(entry_fn)') === 'entry_fn'
+    && definitionName('SYM_CODE_START(entry_code)') === 'entry_code'
+    && definitionName('ENTRY_CFI(entry_cfi)') === 'entry_cfi',
+    '搜索定义识别：C 定义/原型/宏/控制语句/汇编',
+    JSON.stringify({ typedInfo, ifLine: definitionName('if (x) {'), asm: definitionName('SYM_FUNC_START(entry_fn)') }),
+  );
+  assert(
+    matchRank('foo', 'foo') === 0
+    && matchRank('Foo', 'foo') === 1
+    && matchRank('foobar', 'foo') === 2
+    && matchRank('FOOBAR', 'foo') === 3
+    && matchRank('xfoo', 'foo') === 4,
+    '搜索排序：完全匹配 > 前缀 > 部分',
+  );
   assert(wordAt(sampleContent, 3, 33) === 'demo_event', '文本检索兜底：光标位置取词');
   const typeDefinitions = await searchSymbolDefinitions({ root: work, filePath: 'sample.c', line: 3, character: 33, content: sampleContent });
   assert(typeDefinitions.length === 1 && typeDefinitions[0].path === 'sample.h' && typeDefinitions[0].line === 1, '文本检索兜底：结构体定义定位到头文件', JSON.stringify(typeDefinitions));
@@ -619,7 +696,7 @@ assert((page.headers.get('content-security-policy') || '').includes('frame-src b
   const editorSource = readFileSync(path.join(repoRoot, 'web-src/editor.js'), 'utf8');
   assert(editorSource.includes("binding.key !== 'Mod-i'"), 'Vim Ctrl-i 不被 CodeMirror selectParentSyntax 覆盖');
   assert(editorSource.includes("Vim.defineEx('vi'") && editorSource.includes('readerJumpBack'), '编辑器注册 :vi 与应用级 Ctrl-o 跳转');
-  const appSource = readFileSync(path.join(repoRoot, 'public/app.js'), 'utf8');
+  const appSource = readFrontendSources();
   const navSource = readFileSync(path.join(repoRoot, 'public/keyboard-nav.js'), 'utf8');
   const vimNavSource = readFileSync(path.join(repoRoot, 'public/vim-nav.js'), 'utf8');
   assert(appSource.includes('function-history?') && appSource.includes('renderFilteredTree') && appSource.includes('function focusTree'), '前端含函数历史/过滤/文件树聚焦');
@@ -768,6 +845,12 @@ appSource.includes('createAnimationHtml') && appSource.includes('fetchFunctionHi
   assert(appSource.includes('function showCommit') && appSource.includes('faq-toggle'), '前端提交弹窗与 FAQ 折叠实现存在');
   assert(appSource.includes('historyCoversLine') && appSource.includes('cachedFunctionHistory'), '前端函数内移动不重复刷新历史');
   assert(appSource.includes('loadReferencePreview') && editorSource.includes('quickpick-preview'), '前端引用列表带上下文预览');
+  assert(
+    appSource.includes('openWorkspaceSearch') && appSource.includes('workspace-search-')
+    && editorSource.includes('quickpick-input') && editorSource.includes('updateQuickpickItems')
+    && html.includes('Ctrl+Alt+P'),
+    '前端工作区搜索：输入框 + 引用窗口预览 + Ctrl+Alt+P / \\s 入口',
+  );
   assert(appSource.includes('applyEditorFont') && appSource.includes('code-reader-theme-v2'), '前端同步本地字体并以本地主题为默认');
   assert(
     appSource.includes("event.code === 'Digit1'") && appSource.includes("event.code === 'Digit2'")
