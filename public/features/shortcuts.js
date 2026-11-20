@@ -8,6 +8,7 @@ import { isEditableTarget } from '../core/policies.js';
 import { activateWorkspaceByIndex, activateWorkspaceByOffset } from './workspace.js';
 import {
   cancelTreeFocusRequest,
+  closeInsightsPanel,
   gotoDefinition,
   gotoReferences,
   toggleCodeTreePanel,
@@ -117,15 +118,24 @@ export function initShortcuts() {
       editor?.focus();
       return;
     }
-    // 解释栏项列表：焦点在提交行/「深层演变」等控件上时，Esc 先退回阅读容器
-    // #explanation-content，再按一次才回编辑器。搜索条打开时先清搜索。
+    // 解释栏：焦点在内部控件上时，Esc 先退回所在内容容器；已在容器上时
+  // 直接收起窗口（不再需要先跳到解释区再按第二次）。搜索条打开时先清搜索。
     if (event.key === 'Escape') {
       const active = document.activeElement;
       const insights = elements.insights;
-      if (insights && active instanceof Element && insights.contains(active) && !active.closest('#explanation-content')) {
+      if (insights && active instanceof Element && insights.contains(active)) {
         event.preventDefault();
         if (document.querySelector('.vim-search')) {
           vimNav.closeSearch();
+          return;
+        }
+        const content = active.closest('.insight-content');
+        if (content && content !== active) {
+          content.focus({ preventScroll: true });
+          return;
+        }
+        if (content) {
+          closeInsightsPanel();
           return;
         }
         elements.explanationContent.focus({ preventScroll: true });

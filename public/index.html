@@ -103,7 +103,7 @@
         <div id="code-empty" class="code-empty">
           <div class="empty-mark">&lt;/&gt;</div>
           <h1>从代码树选择一个文件</h1>
-          <p>光标移动即可查看当前函数的提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用（列表选中项显示前后 10 行与 Caller），<kbd>\s</kbd> 或 <kbd>Ctrl+Alt+P</kbd> 在工作区搜索函数/文件名，<kbd>Ctrl-o</kbd> 跳回，<kbd>\e</kbd> 聚焦文件树，<kbd>\c</kbd> 就当前行提问。</p>
+          <p>光标移动即可查看当前函数的提交历史，<kbd>gd</kbd> 跳转到定义，<kbd>gr</kbd> 查找引用（列表选中项显示前后 10 行与 Caller），<kbd>\s</kbd> 或 <kbd>Ctrl+Alt+P</kbd> 在工作区搜索函数/文件名（支持 <kbd>/正则/</kbd>），<kbd>Ctrl-o</kbd> 跳回，<kbd>\e</kbd> 聚焦文件树，<kbd>\c</kbd> 就当前行提问。</p>
           <p>编辑器为完整 Vim 模式（<kbd>i</kbd>/<kbd>Esc</kbd> 切换，<kbd>/</kbd> 搜索，<kbd>u</kbd> 撤销，<kbd>:help</kbd> 查看全部快捷键）；修改仅保存在内存，不会写回磁盘。</p>
         </div>
         <div id="editor-host" class="editor-host" tabindex="0" hidden>
@@ -164,14 +164,14 @@
           <h2>函数提交历史</h2>
           <span id="history-anchor" class="section-anchor">当前函数</span>
         </div>
-        <div id="history-content" class="insight-content empty-insight">显示当前函数的最近提交</div>
+        <div id="history-content" class="insight-content empty-insight" tabindex="0">显示当前函数的最近提交</div>
       </section>
       <section id="faq-section" class="insight-section faq-section" hidden>
         <div class="section-heading">
           <h2>代码 FAQ</h2>
           <span id="faq-anchor" class="section-anchor"></span>
         </div>
-        <div id="faq-content" class="insight-content"></div>
+        <div id="faq-content" class="insight-content" tabindex="0"></div>
       </section>
       <section class="insight-section explanation-section">
         <div class="section-heading">

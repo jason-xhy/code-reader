@@ -58,16 +58,22 @@ export function renderReadingTrail() {
 // 两侧栏共用入口：键盘 Ctrl+Alt+B/I 与代码窗口上方的箭头按钮走同一条路径。
 // 语义是「去这个窗口」而不是盲目开关：面板已打开但焦点不在里面时，把焦点送进去；
 // 只有焦点已经在面板内时，再按一次才收起。
+export function closeCodeTreePanel({ restoreFocus = true } = {}) {
+  treeFocusRequest += 1;
+  window.__crPanels?.hide('sidebar');
+  if (restoreFocus) {
+    if (editor) editor.focus();
+    else elements.navTree?.focus({ preventScroll: true });
+  }
+}
+
 export function toggleCodeTreePanel() {
   const app = document.getElementById('app');
   const visible = app.classList.contains('sidebar-visible');
   const focusInside = Boolean(document.activeElement?.closest?.('.sidebar'));
   if (visible && focusInside) {
     // 收起后焦点回代码窗；侧栏里的节点随即隐藏，不能再把焦点留在提示按钮上。
-    treeFocusRequest += 1;
-    window.__crPanels?.toggle('sidebar');
-    if (editor) editor.focus();
-    else elements.navTree?.focus({ preventScroll: true });
+    closeCodeTreePanel();
     return;
   }
   window.__crPanels?.pin('sidebar');
@@ -122,14 +128,18 @@ function requestTreeFocus() {
   attempt();
 }
 
+export function closeInsightsPanel({ restoreFocus = true } = {}) {
+  window.__crPanels?.hide('insights');
+  if (restoreFocus) editor?.focus();
+}
+
 export function toggleInsightsPanel() {
   const app = document.getElementById('app');
   const visible = app.classList.contains('insights-visible');
   const focusInside = Boolean(document.activeElement?.closest?.('.insights'));
   if (visible && focusInside) {
     // 焦点已在解释窗口里：再按一次收起，焦点回代码窗。
-    window.__crPanels.toggle('insights');
-    editor?.focus();
+    closeInsightsPanel();
     return;
   }
   // 隐藏时打开；悬停/已打开时钉住；随后聚焦解释窗口以便 j/k 导航。

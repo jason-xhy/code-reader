@@ -119,20 +119,32 @@ export function initAutoPanels({ focus = {} } = {}) {
     clearTimeout(timers.get(panel.name));
     timers.set(panel.name, setTimeout(() => conceal(panel), PANEL_HIDE_DELAY));
   };
+  // 收起面板：取消钉住，并在 400ms 内抑制指针重新滑出（指针正停在面板
+  // 下方时，布局变化会让浏览器补发 pointerenter，否则刚关就弹开）。
+  const closePanel = (panel) => {
+    if (!panel) return false;
+    panel.pinned = false;
+    clearTimeout(timers.get(panel.name));
+    app.classList.remove(`${panel.name}-visible`);
+    syncInert(panel);
+    // 只有指针正停在面板/边缘上时才抑制 400ms：否则布局变化会让浏览器补发
+    // pointerenter，刚关就弹开。指针不在附近时不应拦截用户随后的主动滑入。
+    const pointerOver = panel.el.matches(':hover')
+      || panel.trigger?.matches(':hover')
+      || panel.splitter?.matches(':hover');
+    if (pointerOver) {
+      panel.suppress = true;
+      clearTimeout(panel.suppressTimer);
+      panel.suppressTimer = setTimeout(() => { panel.suppress = false; }, 400);
+    }
+    return true;
+  };
   // Ctrl+Alt+B / Ctrl+Alt+I 的面板语义在 navigation 模块里统一处理（见「去这个窗口」），
   // 这里的 toggle 只保留给加载状态等内部使用。
   const toggle = (panel) => {
     if (!panel) return false;
-    if (app.classList.contains(`${panel.name}-visible`)) {
-      panel.pinned = false;
-      clearTimeout(timers.get(panel.name));
-      app.classList.remove(`${panel.name}-visible`);
-      syncInert(panel);
-      // 面板在鼠标下方收起时，避免指针立刻触发 pointerenter 又弹开。
-      panel.suppress = true;
-      clearTimeout(panel.suppressTimer);
-      panel.suppressTimer = setTimeout(() => { panel.suppress = false; }, 400);
-    } else {
+    if (app.classList.contains(`${panel.name}-visible`)) closePanel(panel);
+    else {
       panel.pinned = true;
       panel.suppress = false;
       reveal(panel, { force: true });
@@ -143,6 +155,14 @@ export function initAutoPanels({ focus = {} } = {}) {
   // 否则窗口可见但焦点仍在代码窗，j/k 等按键会继续落在编辑器里。
   const openByPointer = (panel) => {
     if (!panel) return;
+    // 搜索/引用列表打开时，面板不抢前台也不抢焦点：quickpick 的 j/k 与输入
+    // 必须留在列表里。隐藏面板会让指针下的 trigger 重新收到 pointerenter，
+    // 这里直接短路，避免「打开搜索 → 侧栏弹出 → 焦点被抢」。
+    const quickpick = document.getElementById('quickpick');
+    if (quickpick && !quickpick.hidden) return;
+    if (document.querySelector('dialog[open]')) return;
+    const commit = document.getElementById('commit-overlay');
+    if (commit && !commit.hidden) return;
     reveal(panel);
     // reveal 可能因 suppress（刚收起 400ms 内）被跳过：没真正打开就不移交焦点。
     if (!app.classList.contains(`${panel.name}-visible`)) return;
@@ -171,9 +191,7 @@ export function initAutoPanels({ focus = {} } = {}) {
     if (!panel) return;
     // 显式收起侧栏时同步关掉右键菜单，避免菜单留在已 inert 的侧栏之外。
     if (panel.name === 'sidebar') elements.treeMenu.hidden = true;
-    clearTimeout(timers.get(panel.name));
-    app.classList.remove(`${panel.name}-visible`);
-    syncInert(panel);
+    closePanel(panel);
   };
   window.__crPanels = {
     show(name) {

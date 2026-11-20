@@ -433,6 +433,8 @@ try {
   const searchEmpty = await api('GET', `${repoBase}/search?q=`);
   assert(searchEmpty.status === 400, '工作区搜索：空关键字返回 400', `status=${searchEmpty.status}`);
   writeFileSync(path.join(work, 'untracked_search.c'), 'static void untracked_fn(void)\n{\n}\n');
+  // 未跟踪文件不在已建索引里：刷新（与文件树刷新同一动作）后重新建索引。
+  await api('POST', `${repoBase}/refresh`);
   const searchUntracked = await api('GET', `${repoBase}/search?q=untracked_fn`);
   assert(
     searchUntracked.data.results?.some((item) => item.kind === 'function'
@@ -441,6 +443,28 @@ try {
     '工作区搜索：未跟踪源码文件也能命中',
     JSON.stringify(searchUntracked.data.results),
   );
+  // 索引在后台构建：轮询到 ready 再验证 /正则/ 与索引元数据。
+  let indexState = null;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const probe = await api('GET', `${repoBase}/search?q=demo_handle`);
+    indexState = probe.data.index || null;
+    if (indexState?.status === 'ready') break;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  assert(
+    indexState?.status === 'ready' && indexState.symbols >= 2,
+    '工作区搜索：符号索引构建完成并报告规模',
+    JSON.stringify(indexState),
+  );
+  const searchRegex = await api('GET', `${repoBase}/search?q=${encodeURIComponent('/^demo_h.*$/')}`);
+  assert(
+    searchRegex.data.mode === 'regex'
+    && searchRegex.data.results?.some((item) => item.kind === 'function' && item.name === 'demo_handle'),
+    '工作区搜索：/正则/ 查询命中函数',
+    JSON.stringify(searchRegex.data.results?.slice(0, 3)),
+  );
+  const badRegex = await api('GET', `${repoBase}/search?q=${encodeURIComponent('/[/')}`);
+  assert(badRegex.status === 400, '工作区搜索：非法正则返回 400', `status=${badRegex.status}`);
   const typedInfo = definitionInfo('struct foo_t *foo(void)');
   assert(
     definitionName('static int foo(struct x *p)') === 'foo'

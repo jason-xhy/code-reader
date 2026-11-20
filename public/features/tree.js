@@ -541,6 +541,9 @@ function wireTreeEvents() {
       treeGPressedAt = 0;
       event.preventDefault();
       event.stopPropagation();
+      // 关闭是「收起窗口」而不是只把焦点送回编辑器：窗口若留在屏幕上，
+      // 用户再按 j/k 会落回代码窗，表现为「窗口开着但导航失效」。
+      window.__crPanels?.hide('sidebar');
       editor.focus();
       return;
     } else if (key === '/') {

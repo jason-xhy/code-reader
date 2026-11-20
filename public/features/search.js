@@ -22,7 +22,8 @@ const MATCH_LABELS = { exact: '完全匹配', prefix: '前缀匹配', partial: '
 function searchTitle(data) {
   const counts = data?.counts || {};
   const truncated = data?.truncated ? ' · 结果已截断' : '';
-  return `${counts.functions || 0} 个函数 · ${counts.files || 0} 个文件${truncated} · ↑/↓ 或 Ctrl+j/k 选择 · Enter 跳转 · Esc 取消`;
+  const indexing = data?.index?.status === 'building' ? ' · 索引构建中' : '';
+  return `${counts.functions || 0} 个函数 · ${counts.files || 0} 个文件${truncated}${indexing} · ↑/↓ 或 Ctrl+j/k 选择 · Enter 跳转 · Esc 取消`;
 }
 
 export function openWorkspaceSearch() {
@@ -43,8 +44,8 @@ export function openWorkspaceSearch() {
     if (!query) {
       editor.updateQuickpickItems([], {
         sessionId,
-        title: '在工作区搜索函数或文件名 · 完全匹配优先',
-        emptyText: '输入关键字开始搜索（函数名或文件名）',
+        title: '在工作区搜索函数或文件名 · 支持 /正则/ · 完全匹配优先',
+        emptyText: '输入关键字开始搜索（函数名或文件名，或输入 /正则/）',
       });
       return;
     }
@@ -85,10 +86,10 @@ export function openWorkspaceSearch() {
     deps.jumpTo({ path: item.path, line: item.line, character: item.character || 0 });
   }, {
     sessionId,
-    title: '在工作区搜索函数或文件名 · 完全匹配优先 · ↑/↓ 或 Ctrl+j/k 选择',
-    emptyText: '输入关键字开始搜索（函数名或文件名）',
+    title: '在工作区搜索函数或文件名 · 支持 /正则/ · ↑/↓ 或 Ctrl+j/k 选择',
+    emptyText: '输入关键字开始搜索（函数名或文件名，或输入 /正则/）',
     input: {
-      placeholder: '搜索函数或文件名（完全匹配优先）…',
+      placeholder: '搜索函数/文件名，或 /正则/（默认忽略大小写）…',
       onChange: (value) => run(value),
     },
     preview: loadContextPreview,

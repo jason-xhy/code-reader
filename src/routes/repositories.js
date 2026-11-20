@@ -11,6 +11,7 @@ import {
 import { resetLspSession } from '../lsp.js';
 import { requiredString } from '../policies/request.js';
 import { clearSearchCaches } from '../search/service.js';
+import { invalidateSearchIndex, warmSearchIndex } from '../search/index.js';
 
 function repository(params) {
   return getRepository(params[0]);
@@ -60,6 +61,8 @@ export const repositoryRoutes = [
       const current = repository(params);
       // 刷新文件树时同步失效搜索缓存：新增/删除的未跟踪文件立即可搜。
       clearSearchCaches();
+      await invalidateSearchIndex(current, { dropCache: true });
+      warmSearchIndex(current).catch(() => {});
       sendJson(response, 200, await repositoryPayload(current, { fresh: true }));
     },
   },
@@ -72,6 +75,9 @@ export const repositoryRoutes = [
       const branch = requiredString(body.branch, { message: '缺少目标分支', code: 'INVALID_BRANCH' });
       const checkout = await checkoutBranch(current.root, branch);
       await resetLspSession(current.id);
+      clearSearchCaches();
+      await invalidateSearchIndex(current, { dropCache: true });
+      warmSearchIndex(current).catch(() => {});
       const data = await repositoryPayload(current, { fresh: true });
       sendJson(response, 200, { ...data, checkout });
     },
@@ -82,7 +88,12 @@ export const repositoryRoutes = [
     async handler({ response, params }) {
       const current = repository(params);
       const sync = await syncRepository(current.root);
-      if (sync.action === 'fast-forwarded') await resetLspSession(current.id);
+      if (sync.action === 'fast-forwarded') {
+        await resetLspSession(current.id);
+        clearSearchCaches();
+        await invalidateSearchIndex(current, { dropCache: true });
+        warmSearchIndex(current).catch(() => {});
+      }
       const data = await repositoryPayload(current, { fresh: true });
       sendJson(response, 200, { ...data, sync });
     },

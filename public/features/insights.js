@@ -24,11 +24,28 @@ export function initInsightsFeature(dependencies) {
     event.preventDefault();
     submitQuestion();
   });
-  // 解释窗口：点击空白处先让内容容器获得焦点（阅读模式）；Esc 先退回容器，
-  // 再按一次回编辑器。j/k/gg/G 由通用 Vim 导航层处理。
-  elements.explanationContent.addEventListener('click', (event) => {
-    if (event.target.closest('[data-nav], a, button, summary')) return;
-    elements.explanationContent.focus();
+  // 解释窗口：点击窗口内任意非交互区域（标题栏、分组标题、空白）都把焦点
+// 交给对应内容容器，保证随后的 j/k 一定落在窗口里；点击链接/按钮则不抢。
+  // Esc：焦点在内部控件上时先退回容器，已在容器上时收起窗口并回代码窗。
+  // q：与 Vim 的关窗口语义一致，直接收起。
+  elements.insights?.addEventListener('click', (event) => {
+    if (event.target.closest('a, button, summary, input, select, textarea, [data-nav], [contenteditable="true"]')) return;
+    const section = event.target.closest('.insight-section');
+    const target = section?.querySelector('.insight-content') || elements.explanationContent;
+    target.focus({ preventScroll: true });
+  });
+  const closeInsights = () => {
+    window.__crPanels?.hide('insights');
+    editor?.focus();
+  };
+  elements.insights?.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (event.key === 'q') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeInsights();
+    }
   });
   elements.explanationContent.addEventListener('keydown', (event) => {
     if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -38,8 +55,9 @@ export function initInsightsFeature(dependencies) {
       elements.explanationContent.focus({ preventScroll: true });
       return;
     }
-    editor?.focus();
+    closeInsights();
   });
+  elements.insightsToggle?.addEventListener('click', closeInsights);
   elements.commitOverlayClose.addEventListener('click', closeCommitOverlay);
   elements.commitOverlay.addEventListener('click', (event) => {
     if (event.target === elements.commitOverlay) closeCommitOverlay();
@@ -508,6 +526,14 @@ export function renderHistory() {
     actions.append(deep);
   }
   elements.historyContent.append(actions);
+  // 面板先打开、提交历史后到时，焦点可能还停在空的解释内容上（j/k 没有任何
+  // 落点）。只在焦点确实位于解释内容且面板可见时，把焦点挪到第一条提交。
+  const active = document.activeElement;
+  if (active === elements.explanationContent
+    && elements.explanationContent.classList.contains('empty-insight')
+    && document.getElementById('app').classList.contains('insights-visible')) {
+    elements.historyContent.querySelector('.commit-header')?.focus({ preventScroll: true });
+  }
 }
 
 // renderHistory 会重建整个列表：点「深层演变」后历史区立即切成加载态，
@@ -891,6 +917,16 @@ export function focusExplanationPanel() {
   if (!elements.commitOverlay.hidden || document.querySelector('dialog[open]')) return;
   // 面板已被收起时不要再聚焦（聚焦会触发 focusin 把面板重新滑出来）。
   if (!document.getElementById('app').classList.contains('insights-visible')) return;
+  // 解释还没生成时，解释内容是空的，j/k 无处可去；此时把焦点交给函数提交
+  // 历史的第一条，打开窗口即可用 j/k 浏览提交（有解释时仍优先解释内容）。
+  const explanationEmpty = elements.explanationContent.classList.contains('empty-insight');
+  if (explanationEmpty) {
+    const firstCommit = elements.historyContent.querySelector('.commit-header');
+    if (firstCommit) {
+      firstCommit.focus({ preventScroll: true });
+      return;
+    }
+  }
   elements.explanationContent.focus({ preventScroll: true });
 }
 

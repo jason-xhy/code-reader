@@ -286,11 +286,12 @@ try {
   await evaluate("document.querySelector('#insights-trigger').dispatchEvent(new PointerEvent('pointerenter')); true");
   await sleep(260);
   const insightsHover = await panelState();
-  const insightsHoverFocus = await evaluate("document.activeElement?.id || ''");
+  const insightsHoverFocus = await evaluate("document.activeElement?.id || document.activeElement?.className || ''");
+  const insightsHoverInside = await evaluate("Boolean(document.activeElement?.closest?.('.insights'))");
   check(
-    '鼠标移到右边缘打开分析栏并把焦点交给解释窗口',
+    '鼠标移到右边缘打开分析栏并把焦点交给窗口内容',
     insightsHover.classes.includes('insights-visible')
-    && insightsHover.insights.left < insightsHover.viewport - 100 && insightsHoverFocus === 'explanation-content',
+    && insightsHover.insights.left < insightsHover.viewport - 100 && insightsHoverInside,
     JSON.stringify({ ...insightsHover, focus: insightsHoverFocus }),
   );
   await evaluate("document.querySelector('#insights-trigger').dispatchEvent(new PointerEvent('pointerleave')); document.querySelector('.insights').dispatchEvent(new PointerEvent('pointerleave')); true");
@@ -838,6 +839,11 @@ try {
   await pressRealKey('i', 'KeyI', 73, 3);
   await waitFor("document.querySelector('#app').classList.contains('insights-visible')", 5000);
   await sleep(300);
+  // 点击标题栏（非交互区域）也必须把焦点交给内容容器，否则随后 j/k 无落点。
+  await evaluate("document.querySelector('.insights-bar').click(); true");
+  await sleep(120);
+  const barFocus = await evaluate("document.activeElement?.id || document.activeElement?.className || ''");
+  check('点击解释栏标题栏后焦点进入内容容器', barFocus === 'explanation-content', barFocus);
 
   // 捕获阶段拦截 click，避免真的打开新标签。
   await evaluate(`(() => {
@@ -887,6 +893,54 @@ try {
   await waitFor("!document.querySelector('#reading-trail')?.hidden && document.querySelectorAll('#reading-trail .trail-chip').length >= 1", 5000);
   const trailState = await evaluateJson("JSON.stringify({ hidden: document.querySelector('#reading-trail').hidden, chips: document.querySelectorAll('#reading-trail .trail-chip').length })");
   check('建议继续阅读会在编辑器上方留下阅读路径', !trailState.hidden && trailState.chips >= 1, JSON.stringify(trailState));
+
+  // 关闭语义：面板内 Esc/q 直接收起窗口（不是只把焦点送回编辑器后留着窗口）。
+  await evaluate("document.querySelector('.cm-content')?.focus(); true");
+  await pressRealKey('i', 'KeyI', 73, 3);
+  await sleep(250);
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(250);
+  const insightsEsc = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('insights-visible'), active: document.activeElement?.className || '' })");
+  check(
+    '解释窗口 Esc 直接收起并回到编辑器',
+    !insightsEsc.visible && insightsEsc.active.includes('cm-content'),
+    JSON.stringify(insightsEsc),
+  );
+  await evaluate("document.querySelector('.cm-content')?.focus(); true");
+  await pressRealKey('b', 'KeyB', 66, 3);
+  await waitFor("document.querySelector('#app').classList.contains('sidebar-visible')", 5000);
+  await sleep(250);
+  await pressRealKey('q', 'KeyQ', 81);
+  await sleep(250);
+  const treeClosedByQ = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('sidebar-visible'), active: document.activeElement?.className || '' })");
+  check(
+    '代码树 q 直接收起并回到编辑器',
+    !treeClosedByQ.visible && treeClosedByQ.active.includes('cm-content'),
+    JSON.stringify(treeClosedByQ),
+  );
+  // 打开工作区搜索后，鼠标停在侧栏 trigger 上（布局变化会补发 pointerenter）
+  // 不能把焦点从 quickpick 输入框抢走；输入框必须还能正常输入。
+  await evaluate("document.querySelector('.cm-content')?.focus(); window.__ts.openWorkspaceSearch(); true");
+  await waitFor("document.activeElement?.classList?.contains('quickpick-input') === true", 5000);
+  await sleep(600);
+  await evaluate("document.getElementById('insights-trigger').dispatchEvent(new PointerEvent('pointerenter')); true");
+  await sleep(250);
+  const quickpickGuard = await evaluateJson("JSON.stringify({ active: document.activeElement?.className || '', insights: document.querySelector('#app').classList.contains('insights-visible') })");
+  check(
+    '搜索打开时边缘指针不抢 quickpick 焦点',
+    quickpickGuard.active.includes('quickpick-input') && !quickpickGuard.insights,
+    JSON.stringify(quickpickGuard),
+  );
+  await pressRealKey('x', 'KeyX', 88, 0, 'x');
+  await sleep(500);
+  const quickpickTyped = await evaluateJson("JSON.stringify({ value: document.querySelector('#quickpick .quickpick-input')?.value || '', active: document.activeElement?.className || '' })");
+  check(
+    '工作区搜索输入框保持焦点并可输入',
+    quickpickTyped.value === 'x' && quickpickTyped.active.includes('quickpick-input'),
+    JSON.stringify(quickpickTyped),
+  );
+  await evaluate("window.__ts.closeQuickpick(); window.__crPanels.pin('insights'); true");
+  await sleep(250);
 
   await evaluate("(() => { const button = document.querySelector('#explanation-content .animation-open'); button?.focus(); button?.click(); return true; })()");
   await waitFor("!document.querySelector('#animation-overlay')?.hidden", 10000);

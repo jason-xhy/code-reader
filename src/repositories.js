@@ -8,6 +8,7 @@ import { cloneRepository, listSourceFiles, repositoryMeta, repositoryRoot, repos
 import { getResume, touchRepository } from './history.js';
 import { activateRepository } from './workspace.js';
 import { dataPath } from './paths.js';
+import { warmSearchIndex } from './search/index.js';
 
 const repositories = new Map();
 const cloneRoot = dataPath('repositories');
@@ -86,6 +87,8 @@ export async function openLocal(localPath, { resume = false, activate = true } =
     workspace = await activateRepository(repository);
   }
   const data = await payload(repository);
+  // 索引在后台构建：用户第一次搜索时通常已就绪；失败时搜索自动回退实时 grep。
+  warmSearchIndex(repository).catch(() => {});
   return {
     ...data,
     ...(workspace ? { workspace } : {}),
@@ -125,6 +128,7 @@ export async function openRemote(remoteUrl, { resume = false, activate = true } 
     workspace = await activateRepository(repository);
   }
   const data = await payload(repository);
+  warmSearchIndex(repository).catch(() => {});
   return {
     ...data,
     ...(workspace ? { workspace } : {}),
