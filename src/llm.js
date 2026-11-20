@@ -147,7 +147,7 @@ function parseExplanation(raw, animationRequested = false) {
     evidence: parseEvidence(value.evidence),
     nextSteps: parseNextSteps(value.nextSteps),
     specifications,
-    animation: animationRequested ? parseAnimation(value.animation) : null,
+animation: animationRequested ? parseAnimation(value.animation) : null,
   };
 }
 
@@ -170,7 +170,7 @@ function anthropicResponseInfo(completion) {
   };
 }
 
-async function requestCompletion(config, messages) {
+async function requestCompletion(config, messages, systemPrompt = SYSTEM_PROMPT) {
   const anthropic = config.protocol === 'anthropic';
   const url = anthropic ? anthropicMessagesUrl(config.baseUrl) : `${config.baseUrl}/chat/completions`;
   const requestBody = anthropic
@@ -180,13 +180,13 @@ async function requestCompletion(config, messages) {
         // 推理模型的 thinking token 也计入 max_tokens；复杂源码会让模型在思考阶段
         // 耗尽预算而完全不产生 text 内容块。结构化 JSON 输出不需要对外暴露思考过程。
         thinking: { type: 'disabled' },
-        system: SYSTEM_PROMPT,
+        system: systemPrompt,
         messages,
       }
     : {
         model: config.model,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt },
           ...messages,
         ],
       };
@@ -267,7 +267,8 @@ export async function explainSource(source, filePath, line, question, options = 
   if (!config.configured) {
     throw new AppError('LLM 未配置，请点击左下角“LLM 设置”选择模型并保存 API Key', 503, 'LLM_NOT_CONFIGURED');
   }
-  const animationRequested = wantsAnimation(question);
+const animationRequested = options.animate === true || wantsAnimation(question);
+  const systemPrompt = SYSTEM_PROMPT;
   const context = contextFor(await buildUnderstandingContext({
     repositoryRoot: options.repositoryRoot,
     filePath,
@@ -318,7 +319,7 @@ export async function explainSource(source, filePath, line, question, options = 
     ...(webResults.length ? { webSearch: webResults } : {}),
   });
   const messages = [{ role: 'user', content: userContent }];
-  const first = await requestCompletion(config, messages);
+  const first = await requestCompletion(config, messages, systemPrompt);
   let explanation;
   try {
     explanation = parseExplanation(first.content, animationRequested);
@@ -334,7 +335,7 @@ export async function explainSource(source, filePath, line, question, options = 
       ...messages,
       { role: 'assistant', content: first.content },
       { role: 'user', content: '上面的回答不符合要求。请严格按系统提示的结构重新回答，只输出一个 JSON 对象，不要输出 Markdown 代码围栏或任何额外说明。' },
-    ]);
+    ], systemPrompt);
     try {
       explanation = parseExplanation(retry.content, animationRequested);
     } catch (retryError) {
@@ -348,7 +349,7 @@ export async function explainSource(source, filePath, line, question, options = 
       throw retryError;
     }
   }
-  const documentedSources = new Set(documentation.hits.map((hit) => hit.source));
+const documentedSources = new Set(documentation.hits.map((hit) => hit.source));
   explanation.specifications = explanation.specifications.map((spec) => ({
     ...spec,
     verified: Boolean(spec.source && documentedSources.has(spec.source) && spec.section && spec.section !== '未核实'),

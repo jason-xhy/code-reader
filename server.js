@@ -23,6 +23,7 @@ import { explainSource, llmStatus, saveLlmConfig } from './src/llm.js';
 import { getRepository, openLocal, openRemote, repositoryPayload } from './src/repositories.js';
 import { lspGotoDefinition, lspPrewarm, lspReferences, lspStatus, resetLspSession } from './src/lsp.js';
 import { clearHistory, listHistory, removeHistory, touchRepository } from './src/history.js';
+import { activateWorkspaceKey, listWorkspace, removeWorkspaceEntry } from './src/workspace.js';
 import { listDirectories } from './src/fs-browser.js';
 import { docsStats, getDocsConfig, invalidateDocsIndex, saveDocsConfig } from './src/docs.js';
 import { deleteFaq, detectSegment, findFaq, recordFaq } from './src/faq.js';
@@ -113,12 +114,32 @@ async function handleApi(request, response, url) {
   }
   if (url.pathname === '/api/repositories/open-local' && request.method === 'POST') {
     const body = await readJson(request);
-    sendJson(response, 200, await openLocal(body.path, { resume: Boolean(body.resume) }));
+    sendJson(response, 200, await openLocal(body.path, {
+      resume: Boolean(body.resume),
+      activate: body.activate !== false,
+    }));
     return;
   }
   if (url.pathname === '/api/repositories/open-remote' && request.method === 'POST') {
     const body = await readJson(request);
-    sendJson(response, 200, await openRemote(body.url, { resume: Boolean(body.resume) }));
+    sendJson(response, 200, await openRemote(body.url, {
+      resume: Boolean(body.resume),
+      activate: body.activate !== false,
+    }));
+    return;
+  }
+  if (url.pathname === '/api/workspace' && request.method === 'GET') {
+    sendJson(response, 200, await listWorkspace());
+    return;
+  }
+  if (url.pathname === '/api/workspace/activate' && request.method === 'POST') {
+    const body = await readJson(request);
+    sendJson(response, 200, await activateWorkspaceKey(String(body.key || '')));
+    return;
+  }
+  if (url.pathname === '/api/workspace/close' && request.method === 'POST') {
+    const body = await readJson(request);
+    sendJson(response, 200, await removeWorkspaceEntry(String(body.key || '')));
     return;
   }
   if (url.pathname === '/api/history' && request.method === 'GET') {
@@ -177,7 +198,7 @@ async function handleApi(request, response, url) {
       return;
     }
     if (action === 'refresh' && request.method === 'POST') {
-      sendJson(response, 200, await repositoryPayload(repository));
+      sendJson(response, 200, await repositoryPayload(repository, { fresh: true }));
       return;
     }
     if (request.method !== 'POST') throw new AppError('该 API 不支持此请求方法', 405, 'METHOD_NOT_ALLOWED');
@@ -186,14 +207,14 @@ async function handleApi(request, response, url) {
       if (typeof body.branch !== 'string') throw new AppError('缺少目标分支', 400, 'INVALID_BRANCH');
       const checkout = await checkoutBranch(repository.root, body.branch);
       await resetLspSession(repository.id);
-      const data = await repositoryPayload(repository);
+      const data = await repositoryPayload(repository, { fresh: true });
       sendJson(response, 200, { ...data, checkout });
       return;
     }
     if (action === 'sync') {
       const sync = await syncRepository(repository.root);
       if (sync.action === 'fast-forwarded') await resetLspSession(repository.id);
-      const data = await repositoryPayload(repository);
+      const data = await repositoryPayload(repository, { fresh: true });
       sendJson(response, 200, { ...data, sync });
       return;
     }
@@ -308,7 +329,11 @@ async function handleApi(request, response, url) {
     const line = integerParam(String(body.line || ''));
     const source = await readSource(repository.root, body.path || '');
     if (line > source.lines) throw new AppError('行号超出文件范围', 400, 'INVALID_LINE');
-    const explanation = await explainSource(source, body.path, line, body.question, { repositoryRoot: repository.root });
+    const explanation = await explainSource(source, body.path, line, body.question, {
+      repositoryRoot: repository.root,
+      repositoryId: repository.id,
+      animate: body.animate === true,
+    });
     let faq = null;
     try {
       const segment = detectSegment(source.content, line);
@@ -321,7 +346,7 @@ async function handleApi(request, response, url) {
         model: explanation.model,
         head,
         segment,
-        content: source.content,
+content: source.content,
       });
       faq = { id: entry.id, lineStart: entry.lineStart, lineEnd: entry.lineEnd, symbol: entry.symbol };
     } catch (error) {

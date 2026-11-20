@@ -211,6 +211,12 @@ export function mountAnimation(root, data) {
   controls.addEventListener('change', () => renderOnce(state));
   window.addEventListener('keydown', (event) => {
     if (event.target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName)) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      // iframe 在 sandbox 里拿不到父页面 DOM，用 postMessage 请父页面关闭弹层。
+      window.parent?.postMessage({ type: 'code-reader-animation-close' }, '*');
+      return;
+    }
     if (event.key === 'ArrowLeft') { state.stepBy(-1); event.preventDefault(); }
     if (event.key === 'ArrowRight') { state.stepBy(1); event.preventDefault(); }
     if (event.key === ' ') { state.togglePlay(); event.preventDefault(); }

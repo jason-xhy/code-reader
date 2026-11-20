@@ -133,7 +133,7 @@ const stub = createServer(async (request, response) => {
     messages = [];
   }
   lastUserContent = messages.filter((message) => message.role === 'user').map((message) => String(message.content || '')).join('\n');
-  const animationRequested = lastUserContent.includes('"animationRequested":true');
+const animationRequested = lastUserContent.includes('"animationRequested":true');
   const payload = {
     overview: '概览',
     details: ['细节一', '细节二'],
@@ -175,6 +175,8 @@ await new Promise((resolve) => stub.listen(8899, '127.0.0.1', resolve));
 
 const dataDir = path.join(root, 'data');
 mkdirSync(dataDir, { recursive: true });
+// e2e 进程自身也做动画存储单测；dataPath() 按调用时的环境变量解析，因此直接设置。
+process.env.CODE_READER_DATA_DIR = dataDir;
 
 // 固定 editor profile，避免 e2e 依赖本机 nvim 配置；同时覆盖 profile 归一化链路。
 const profileFixture = path.join(root, 'editor-profile.json');
@@ -367,6 +369,8 @@ try {
   assert(faqDelete.data.removed === true, 'FAQ 可删除');
   const faqAfter = await api('GET', `${repoBase}/faq?path=base.txt&line=2`);
   assert(faqAfter.data.entries.length === 0, 'FAQ 删除后不再返回');
+
+  // 旧版外部 viewer 动画 API 已由新版内嵌 Three.js 动画（parseAnimation/createAnimationHtml）取代。
 
   writeFileSync(path.join(work, 'sample.h'), 'struct demo_event {\n\tint value;\n};\n');
   writeFileSync(path.join(work, 'sample.c'), [
@@ -562,6 +566,37 @@ try {
   const removed = await api('POST', '/api/history/remove', { key: `local:${repoRootPath}` });
   assert(removed.data.removed === true, '可删除单条阅读历史');
 
+  const workspace = await api('GET', '/api/workspace');
+  assert(
+    workspace.status === 200 && workspace.data.entries.some((entry) => entry.key === `local:${repoRootPath}`),
+    '工作区记录已打开的仓库',
+    JSON.stringify(workspace.data.entries),
+  );
+  assert(workspace.data.activeKey === `local:${repoRootPath}`, '工作区当前仓库为最近打开的仓库', workspace.data.activeKey);
+
+  const peerOpened = await api('POST', '/api/repositories/open-local', { path: peer });
+  const peerRootPath = peerOpened.data.repository.root;
+  assert(
+    peerOpened.data.workspace?.entries.length === 2 && peerOpened.data.workspace.activeKey === `local:${peerRootPath}`,
+    '工作区可同时打开两个仓库，新仓库成为当前仓库',
+    JSON.stringify(peerOpened.data.workspace),
+  );
+
+  const activated = await api('POST', '/api/workspace/activate', { key: `local:${repoRootPath}` });
+  assert(activated.data.activeKey === `local:${repoRootPath}`, '工作区可在仓库间切换当前仓库', activated.data.activeKey);
+
+  await api('POST', '/api/repositories/open-local', { path: peer, activate: false });
+  const afterBackground = await api('GET', '/api/workspace');
+  assert(afterBackground.data.activeKey === `local:${repoRootPath}`, '后台预载仓库不改变工作区当前仓库', afterBackground.data.activeKey);
+
+  const closed = await api('POST', '/api/workspace/close', { key: `local:${peerRootPath}` });
+  assert(
+    closed.data.closed === true && closed.data.entries.length === 1 && !closed.data.entries.some((entry) => entry.key === `local:${peerRootPath}`),
+    '工作区可关闭仓库',
+    JSON.stringify(closed.data),
+  );
+  assert(closed.data.activeKey === `local:${repoRootPath}`, '关闭非当前仓库不改变当前仓库', closed.data.activeKey);
+
   execFileSync('bash', ['-c', "printf 'dirty-status\\n' >> base.txt"], { cwd: work });
   const refreshed = await api('POST', `${repoBase}/refresh`);
   assert(refreshed.data.status?.['base.txt']?.includes('M'), 'refresh 返回 Git 状态徽标', JSON.stringify(refreshed.data.status));
@@ -573,8 +608,9 @@ try {
   const page = await fetch(base + '/');
   const html = await page.text();
   assert(page.status === 200 && html.includes('branch-select') && html.includes('sync-button'), '首页包含分支下拉与更新按钮');
-  assert((page.headers.get('content-security-policy') || '').includes('frame-src blob:'), 'CSP 允许 blob: 动画预览且不放开 script-src', page.headers.get('content-security-policy'));
+assert((page.headers.get('content-security-policy') || '').includes('frame-src blob:'), 'CSP 允许 blob: 动画预览且不放开 script-src', page.headers.get('content-security-policy'));
   assert(html.includes('question-presets') && html.includes('reading-trail') && html.includes('animation-overlay') && html.includes('sandbox="allow-scripts"'), '首页包含预设问题/阅读路径/动画沙箱容器');
+  assert(html.includes('workspace-bar') && html.includes('workspace-tabs') && html.includes('workspace-add'), '首页包含工作区页签容器');
   assert(html.includes('theme-select') && html.includes('docs-dialog') && html.includes('history-menu') && html.includes('faq-section'), '首页包含主题/知识库/历史/FAQ 容器');
   const bundle = await fetch(base + '/vendor/cm6/editor.bundle.js');
   const bundleText = await bundle.text();
@@ -584,10 +620,144 @@ try {
   assert(editorSource.includes("binding.key !== 'Mod-i'"), 'Vim Ctrl-i 不被 CodeMirror selectParentSyntax 覆盖');
   assert(editorSource.includes("Vim.defineEx('vi'") && editorSource.includes('readerJumpBack'), '编辑器注册 :vi 与应用级 Ctrl-o 跳转');
   const appSource = readFileSync(path.join(repoRoot, 'public/app.js'), 'utf8');
+  const navSource = readFileSync(path.join(repoRoot, 'public/keyboard-nav.js'), 'utf8');
+  const vimNavSource = readFileSync(path.join(repoRoot, 'public/vim-nav.js'), 'utf8');
   assert(appSource.includes('function-history?') && appSource.includes('renderFilteredTree') && appSource.includes('function focusTree'), '前端含函数历史/过滤/文件树聚焦');
   assert(
-    appSource.includes('createAnimationHtml') && appSource.includes('fetchFunctionHistoryDeep') && appSource.includes('pushReadingTrail') && appSource.includes('按当前代码重问'),
+appSource.includes('createAnimationHtml') && appSource.includes('fetchFunctionHistoryDeep') && appSource.includes('pushReadingTrail') && appSource.includes('按当前代码重问'),
     '前端含动画预览/深层历史/阅读路径/FAQ 重问',
+  );
+  assert(
+    appSource.includes('restoreWorkspace') && appSource.includes("'/api/workspace/activate'") && appSource.includes('activateWorkspaceEntry'),
+    '前端加载即恢复工作区并支持仓库切换',
+  );
+  const stylesSource = readFileSync(path.join(repoRoot, 'public/styles.css'), 'utf8');
+  assert(
+    appSource.includes('activateWorkspaceByOffset') && appSource.includes('activateWorkspaceByIndex')
+    && appSource.includes("'BracketRight'") && appSource.includes('pendingWorkspaceSwitch'),
+    '工作区支持 Ctrl+Alt+[ / ] 与 Ctrl+Alt+Shift+1..9 快捷键（切换队列）',
+  );
+  assert(
+    appSource.includes('preparePayload') && appSource.includes('preparedForSession') && appSource.includes('requestIdleCallback'),
+    '工作区会话缓存代码树并在空闲时预建，切仓不重建',
+  );
+  assert(
+    appSource.includes('typeAheadDir') && appSource.includes("addEventListener('dblclick'") && appSource.includes('selectDirIndex'),
+    '打开对话框目录浏览支持单击选中/双击进入/字母导航',
+  );
+  assert(
+    appSource.includes('flushTreeFilter') && appSource.includes('openFilteredFile') && appSource.includes('filterMatches'),
+    '代码树过滤支持上下键选择与回车打开',
+  );
+  assert(html.includes('dir-list') && stylesSource.includes('.dir-row.selected'), '目录浏览含选中态样式');
+  assert(html.includes('单击选中') && html.includes('双击'), '目录浏览器提示单击选中/双击进入');
+  assert(
+    appSource.includes('workspace-tab-key') && html.includes('editor-tab-key')
+    && html.includes('workspace-cycle-hint') && stylesSource.includes('.workspace-tab-key'),
+    '工作区页签/编辑器页签显示直达快捷键组合',
+  );
+  assert(
+    appSource.includes('preparePayloadIncremental') && appSource.includes('budgetMs'),
+    '预载建树按空闲时间分片，避免 j/k 长任务卡顿',
+  );
+  assert(
+    editorSource.includes('warmQuickpickPreview') && editorSource.includes('pending: true')
+    && stylesSource.includes('.quickpick-preview.pending'),
+    '引用预览保留旧内容并预取邻项，j/k 不闪烁',
+  );
+  assert(
+    html.includes('sidebar-trigger') && html.includes('insights-trigger')
+    && appSource.includes('initAutoPanels') && appSource.includes('pointerenter')
+    && stylesSource.includes('.panel-trigger') && stylesSource.includes('sidebar-visible'),
+    '两侧栏默认隐藏，悬停边缘滑入',
+  );
+  assert(
+    appSource.includes("event.code === 'KeyB'") && appSource.includes("event.code === 'KeyI'")
+    && appSource.includes('toggle(name)') && appSource.includes('panel.pinned')
+    && html.includes('panel-shortcuts') && html.includes('nvim-panel-hints')
+    && stylesSource.includes('.panel-shortcuts'),
+    '代码树/分析栏支持 Ctrl+Alt+B / Ctrl+Alt+I 开关，并在代码窗口显示组合键',
+  );
+  assert(
+    html.includes('code-nav-bar') && html.includes('nav-tree') && html.includes('nav-insights')
+    && html.includes('打开代码树') && html.includes('打开代码解释窗口')
+    && stylesSource.includes('.code-nav-bar') && stylesSource.includes('.code-nav-arrow'),
+    '代码窗口上方显示左右箭头与 Ctrl+Alt+B/I 提示',
+  );
+  assert(
+    appSource.includes('createKeyboardNav') && appSource.includes("event.code === 'KeyK'")
+    && appSource.includes("event.code === 'KeyF'") && appSource.includes('keyboardNav.toggle')
+    && editorSource.includes('visibleMatches') && editorSource.includes('jumpToMatch')
+    && stylesSource.includes('.cr-hint-layer') && stylesSource.includes('.cr-hint-badge'),
+    'Ctrl+Alt+K 标签跳转 / Ctrl+Alt+F 两字符定位（easymotion/sneak）',
+  );
+  assert(
+    navSource.includes('cm-gutters') && navSource.includes('textBoundsOf')
+    && navSource.includes('badgeCandidates'),
+    'Ctrl+Alt+K 标签放在行号槽/目标文字之外，不遮挡导航目标',
+  );
+  assert(
+    !navSource.includes('KeyL') && html.includes('Ctrl+Alt+F') && !html.includes('Ctrl+Alt+L 两字符'),
+    '两字符定位不再使用与系统锁屏冲突的 Ctrl+Alt+L',
+  );
+  assert(
+    navSource.includes("kind: 'editor-line'") && navSource.includes('visibleLines')
+    && editorSource.includes('function visibleLines') && editorSource.includes('function jumpToLine')
+    && navSource.includes('followFocus') && appSource.includes("await activateTreeRow(row)"),
+    '全键盘跳转覆盖代码行，并在打开新窗口/重渲染后把焦点跟进',
+  );
+  assert(
+    appSource.includes('showTreeMenu') && appSource.includes('shiftKey && event.key === \'F10\'')
+    && appSource.includes('focusFirstMenuItem') && appSource.includes('commitOverlayReturnFocus'),
+    '右键菜单/历史菜单/提交详情支持键盘操作与焦点回收',
+  );
+  assert(
+    appSource.includes('question-animation') && appSource.includes('animate: wantsAnimation')
+    && appSource.includes('explanation.animation') && appSource.includes('data-nav')
+    && appSource.includes('focusExplanationPanel') && appSource.includes('createVimNav'),
+    '问题框可请求 3D 动画，解释窗口支持键盘导航',
+  );
+  assert(
+    vimNavSource.includes("'summary'") && vimNavSource.includes("key === 'G'")
+    && vimNavSource.includes('scrollableFor') && vimNavSource.includes('CONTAINER_SELECTOR')
+    && appSource.includes('summary, input, select, textarea')
+    && editorSource.includes("event.key === 'G'") && appSource.includes("key === 'G'"),
+    '任意窗口支持 j/k/gg/G，提交详情 Diff（summary）可键盘展开',
+  );
+  assert(
+    vimNavSource.includes("key === 'PageDown'") && vimNavSource.includes('halfStep')
+    && vimNavSource.includes("key === 'H'") && vimNavSource.includes('countBuffer'),
+    '任意窗口支持计数、半屏/整屏、H/M/L 与 0/^/$ Vim 动作',
+  );
+  assert(
+    vimNavSource.includes("key === '/'") && vimNavSource.includes('findTextMatches')
+    && vimNavSource.includes('CSS.highlights') && stylesSource.includes('::highlight(cr-vim-search)'),
+    '任意窗口支持 / 窗口内搜索与 n/N 命中高亮',
+  );
+  assert(
+    appSource.includes('treeCount') && appSource.includes("key === '/')")
+    && appSource.includes("elements.treeFilter.focus()"),
+    '文件树支持计数/翻屏/H/M/L 并用 / 跳到过滤框',
+  );
+  assert(
+    appSource.includes('focusInside') && appSource.includes("window.__crPanels?.pin('insights')")
+    && html.includes('去代码树/收起') && html.includes('去代码解释窗口/收起'),
+    'Ctrl+Alt+B/I 已打开时聚焦窗口而不是关闭，焦点在窗口内才收起',
+  );
+  assert(
+    appSource.includes('focusMoved') && appSource.includes('markFocusMoved')
+    && appSource.includes('if (active && panel.el.contains(active)) return;'),
+    '解释返回后自动聚焦解释窗口；焦点在面板内时不自动收起',
+  );
+  assert(
+    html.includes('animation-overlay') && html.includes('question-presets') && html.includes('reading-trail')
+    && stylesSource.includes('.animation-overlay') && stylesSource.includes('.evidence-card'),
+    '内嵌 3D 动画/证据链/阅读路径样式存在',
+  );
+  assert(
+    html.includes('nvim-note') && !html.includes('nvim-statusbar')
+    && stylesSource.includes('.nvim-bar') && stylesSource.includes('min-height: 28px'),
+    'nvim 工具条紧凑、去掉底部重复状态栏',
   );
   assert(html.includes('函数提交历史'), '首页函数提交历史标题');
   assert(!html.includes('/vendor/ace/ace.js'), '首页不再加载 Ace');
@@ -600,8 +770,10 @@ try {
   assert(appSource.includes('loadReferencePreview') && editorSource.includes('quickpick-preview'), '前端引用列表带上下文预览');
   assert(appSource.includes('applyEditorFont') && appSource.includes('code-reader-theme-v2'), '前端同步本地字体并以本地主题为默认');
   assert(
-    appSource.includes("event.code === 'KeyE'") && appSource.includes("event.code === 'KeyN'") && html.includes('Ctrl+Alt+E'),
-    '编辑器/nvim 页签支持 Ctrl+Alt+E / Ctrl+Alt+N 切换',
+    appSource.includes("event.code === 'Digit1'") && appSource.includes("event.code === 'Digit2'")
+    && appSource.includes("event.code === 'KeyE'") && appSource.includes("event.code === 'KeyN'")
+    && html.includes('Ctrl+Alt+1') && html.includes('Ctrl+Alt+2'),
+    '编辑器/nvim 页签支持 Ctrl+Alt+1 / Ctrl+Alt+2（兼容 Ctrl+Alt+E / Ctrl+Alt+N）切换',
   );
   assert(html.includes('footer-status') && html.includes('editor-env-options'), '首页底部状态行与编辑器环境选项容器');
   assert(editorSource.includes('whitespaceExtension') && editorSource.includes('setProfile') && editorSource.includes('profileTheme'), '编辑器支持本地 profile 主题与 listchars');

@@ -18,13 +18,13 @@
         </div>
         <div class="open-group">
           <button id="open-menu" class="button primary" type="button">打开</button>
-          <button id="history-menu-button" class="button history-button" type="button" title="阅读历史">历史</button>
+          <button id="history-menu-button" class="button history-button" type="button" title="阅读历史（聚焦后 ↓ 或 Enter 打开）" aria-haspopup="menu" aria-expanded="false">历史</button>
           <div id="history-menu" class="history-menu" hidden></div>
         </div>
       </div>
       <div class="sidebar-tools">
         <label class="search-label" for="tree-filter">代码树</label>
-        <input id="tree-filter" type="search" placeholder="过滤文件…" autocomplete="off" disabled>
+        <input id="tree-filter" type="search" placeholder="过滤文件…" autocomplete="off" disabled title="过滤后 ↑/↓ 选择候选，Enter 打开；只有一个候选时直接回车打开">
       </div>
       <nav id="file-tree" class="file-tree" aria-label="代码树" tabindex="0">
         <div class="empty-tree">打开一个本地或远程 Git 仓库</div>
@@ -41,7 +41,7 @@
       </div>
     </aside>
 
-    <div id="splitter-left" class="splitter" role="separator" aria-orientation="vertical" title="拖动调整文件树宽度"></div>
+    <div id="splitter-left" class="splitter" role="separator" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="420" aria-valuenow="252" tabindex="0" title="拖动调整文件树宽度（聚焦后 ←/→ 调整）"></div>
 
     <main class="reader">
       <header class="topbar">
@@ -60,12 +60,31 @@
           <span id="repository-tags" class="tags">Tag —</span>
         </div>
       </header>
+      <div id="workspace-bar" class="workspace-bar" hidden>
+        <span class="workspace-label" title="Ctrl+Alt+[ / ] 切换仓库；Ctrl+Alt+Shift+1..9 直达第 N 个页签">工作区</span>
+        <div id="workspace-tabs" class="workspace-tabs" role="tablist" aria-label="工作区仓库"></div>
+        <span class="workspace-cycle-hint" title="前后切换工作区仓库"><kbd>Ctrl+Alt+[</kbd> <kbd>Ctrl+Alt+]</kbd></span>
+        <button id="workspace-add" class="workspace-add" type="button" title="在工作区打开另一个仓库">＋</button>
+      </div>
       <div class="editor-tabs" role="tablist" aria-label="编辑模式">
-        <button id="tab-editor" class="editor-tab active" type="button" role="tab" aria-selected="true" title="内置编辑器（Ctrl+Alt+E）">编辑器</button>
-        <button id="tab-nvim" class="editor-tab" type="button" role="tab" aria-selected="false" title="在浏览器内运行本地 nvim（真实插件与键位）· Ctrl+Alt+N">nvim</button>
+        <button id="tab-editor" class="editor-tab active" type="button" role="tab" aria-selected="true" title="内置编辑器（Ctrl+Alt+1）">编辑器<span class="editor-tab-key">Ctrl+Alt+1</span></button>
+        <button id="tab-nvim" class="editor-tab" type="button" role="tab" aria-selected="false" title="在浏览器内运行本地 nvim（真实插件与键位）· Ctrl+Alt+2">nvim<span class="editor-tab-key">Ctrl+Alt+2</span></button>
         <span class="editor-tabs-hint" id="editor-tabs-hint">nvim 为真实本地进程：<kbd>:w</kbd> 会写盘，插件与 LSP 使用你的本地配置</span>
       </div>
-      <nav id="reading-trail" class="reading-trail" aria-label="阅读路径" hidden></nav>
+<nav id="reading-trail" class="reading-trail" aria-label="阅读路径" hidden></nav>
+      <div id="code-nav-bar" class="code-nav-bar" aria-label="代码窗口导航提示">
+        <button id="nav-tree" class="code-nav-hint code-nav-hint-left" type="button" title="Ctrl+Alt+B 去代码树/收起（焦点已在树内时再按收起；若被输入法占用可用 Ctrl+Alt+Shift+B）">
+          <span class="code-nav-arrow" aria-hidden="true">←</span>
+          <kbd>Ctrl + Alt + B</kbd>
+          <span>打开代码树</span>
+        </button>
+        <span class="code-nav-extra" title="全键盘跳转：给可操作元素与代码行打标签；两字符定位：输入两个字符后跳转到匹配处（Ctrl+Alt+L 被系统锁屏占用，改用 F）">Ctrl+Alt+K 全键盘跳转 · Ctrl+Alt+F 两字符定位</span>
+        <button id="nav-insights" class="code-nav-hint code-nav-hint-right" type="button" title="Ctrl+Alt+I 去代码解释窗口/收起（焦点已在窗口内时再按收起；若被输入法占用可用 Ctrl+Alt+Shift+I）">
+          <kbd>Ctrl + Alt + I</kbd>
+          <span>打开代码解释窗口</span>
+          <span class="code-nav-arrow" aria-hidden="true">→</span>
+        </button>
+      </div>
       <div id="repo-notice" class="repo-notice" hidden>
         <span id="repo-notice-text"></span>
         <button id="repo-notice-action" class="button small" type="button" hidden>恢复修改</button>
@@ -73,7 +92,7 @@
       </div>
       <section id="code-area" class="code-area" aria-label="源码">
         <div id="commit-overlay" class="commit-overlay" hidden>
-          <div class="commit-overlay-card" role="dialog" aria-modal="true" aria-label="提交详情">
+          <div class="commit-overlay-card" role="dialog" aria-modal="true" aria-label="提交详情" tabindex="-1">
             <div class="commit-overlay-bar">
               <span id="commit-overlay-title" class="commit-overlay-title">提交详情</span>
               <button id="commit-overlay-close" class="icon-button" type="button" aria-label="关闭">×</button>
@@ -94,6 +113,7 @@
             <span id="vim-mode" class="vim-mode">--NORMAL--</span>
             <span id="cursor-pos" class="cursor-pos">1:1</span>
             <span id="editor-note" class="editor-note">Vim 模式 · gd 跳定义 · gr 引用预览 · Ctrl-o 跳回 · \c 提问 · :help 快捷键 · 修改仅内存</span>
+            <span id="panel-shortcuts" class="editor-note panel-shortcuts" title="焦点在面板内时再按一次收起；K/F 为键盘跳转（F 代替被系统锁屏占用的 L）">Ctrl+Alt+B 代码树 · Ctrl+Alt+I 分析 · Ctrl+Alt+K 跳转 · Ctrl+Alt+F 两字符</span>
             <span id="lsp-state" class="lsp-state">LSP 未检测</span>
           </div>
         </div>
@@ -105,6 +125,10 @@
           <label class="sr-only" for="question-input">想问的问题</label>
           <div id="question-presets" class="question-presets"></div>
           <textarea id="question-input" rows="3" maxlength="4000" placeholder="输入想问的问题…"></textarea>
+          <label class="question-animation" title="勾选后模型会额外生成一份 three.js 3D 动画；问题里含“动画/3D/可视化”等词也会自动启用">
+            <input id="question-animation" type="checkbox">
+            同时生成 3D 动画解释（three.js）
+          </label>
           <div id="question-error" class="inline-error" role="alert"></div>
           <div class="question-actions">
             <span>Esc 取消</span>
@@ -115,21 +139,20 @@
         <div id="nvim-host" class="nvim-host" hidden>
           <div class="nvim-bar">
             <span id="nvim-status" class="nvim-status">nvim</span>
+            <span id="nvim-note" class="nvim-note">正在读取本地 vim/neovim 配置…</span>
+            <span id="nvim-panel-hints" class="nvim-panel-hints" title="焦点在面板内时再按一次收起；K 标签跳转 / F 两字符定位">Ctrl+Alt+B 树 · Ctrl+Alt+I 分析 · K 跳转 · F 定位</span>
             <span class="nvim-bar-spacer"></span>
+            <button id="nvim-keys" class="statusbar-button" type="button" title="查看本地配置中实际生效的按键映射">本地快捷键</button>
             <button id="nvim-open-current" class="button small" type="button" title="在 nvim 中打开 Web 端当前文件与行">打开当前文件</button>
             <button id="nvim-restart" class="button small" type="button" title="结束并重新启动 nvim">重启</button>
             <button id="nvim-close" class="button small" type="button" title="关闭 nvim 面板">关闭</button>
           </div>
           <div id="nvim-term" class="nvim-term"></div>
-          <div class="statusbar nvim-statusbar">
-            <span id="nvim-note" class="editor-note">正在读取本地 vim/neovim 配置…</span>
-            <button id="nvim-keys" class="statusbar-button" type="button" title="查看本地配置中实际生效的按键映射">本地快捷键</button>
-          </div>
         </div>
       </section>
     </main>
 
-    <div id="splitter-right" class="splitter" role="separator" aria-orientation="vertical" title="拖动调整解释栏宽度"></div>
+    <div id="splitter-right" class="splitter" role="separator" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="640" aria-valuenow="372" tabindex="0" title="拖动调整解释栏宽度（聚焦后 ←/→ 调整）"></div>
 
     <aside class="insights">
       <div class="insights-bar">
@@ -155,12 +178,14 @@
           <h2>代码解释</h2>
           <span id="explanation-anchor" class="section-anchor"></span>
         </div>
-        <div id="explanation-content" class="insight-content empty-insight">
+        <div id="explanation-content" class="insight-content empty-insight" tabindex="0">
           在任意源码行按 <kbd>c</kbd>，输入问题后按 <kbd>Enter</kbd> 提交。
         </div>
       </section>
     </aside>
     <button id="insights-expand" class="insights-expand" type="button" title="展开解释栏" hidden>⟨</button>
+    <div id="sidebar-trigger" class="panel-trigger panel-trigger-left" aria-hidden="true" title="代码树（Ctrl+Alt+B 去/收起，或鼠标移入）"><span>›</span></div>
+    <div id="insights-trigger" class="panel-trigger panel-trigger-right" aria-hidden="true" title="分析与解释（Ctrl+Alt+I 去/收起，或鼠标移入）"><span>‹</span></div>
   </div>
 
   <dialog id="open-dialog" class="open-dialog">
@@ -188,7 +213,8 @@
             <span id="dir-path" class="dir-path"></span>
             <button id="dir-pick" class="button primary small" type="button">选择此目录</button>
           </div>
-          <div id="dir-list" class="dir-list"></div>
+          <div id="dir-list" class="dir-list" role="listbox" aria-label="子目录" tabindex="-1"></div>
+          <p class="field-help">单击选中（不进入）；双击或 Enter 进入并回填路径；选中后按字母跳转，↑/↓ 选择。</p>
           <div id="dir-error" class="inline-error" role="alert"></div>
         </div>
         <p class="field-help">也可输入仓库内的子目录；应用不会修改源码或分支。</p>
@@ -355,7 +381,11 @@
       </section>
       <section>
         <h3>本应用扩展</h3>
-        <p><kbd>gd</kbd> LSP 跳定义（也支持 <kbd>Ctrl-]</kbd>）· <kbd>gr</kbd> 查找引用 · <kbd>\e</kbd> 聚焦文件树（<kbd>j</kbd><kbd>k</kbd> 选择、<kbd>Enter</kbd> 打开、<kbd>q</kbd> 返回）· <kbd>\c</kbd> 就当前行向 LLM 提问 · <kbd>:e</kbd> <kbd>:vi</kbd> 按路径打开文件（<kbd>Tab</kbd> 补全）· <kbd>:ask</kbd> <kbd>:gd</kbd> <kbd>:gr</kbd> <kbd>:tree</kbd> <kbd>:help</kbd></p>
+        <p><kbd>gd</kbd> LSP 跳定义（也支持 <kbd>Ctrl-]</kbd>）· <kbd>gr</kbd> 查找引用 · <kbd>\e</kbd> 聚焦文件树（<kbd>j</kbd><kbd>k</kbd> 选择、<kbd>gg</kbd><kbd>G</kbd> 首个/最后一个文件、<kbd>Enter</kbd> 打开、<kbd>q</kbd> 返回）· <kbd>\c</kbd> 就当前行向 LLM 提问 · <kbd>:e</kbd> <kbd>:vi</kbd> 按路径打开文件（<kbd>Tab</kbd> 补全）· <kbd>:ask</kbd> <kbd>:gd</kbd> <kbd>:gr</kbd> <kbd>:tree</kbd> <kbd>:help</kbd> · <kbd>Ctrl+Alt+B</kbd> 去代码树/收起 · <kbd>Ctrl+Alt+I</kbd> 去解释窗口/收起 · <kbd>Ctrl+Alt+K</kbd> 给可操作元素与代码行打标签跳转（easymotion 风格）· <kbd>Ctrl+Alt+F</kbd> 输入两个字符定位（sneak 风格；L 被系统锁屏占用）</p>
+      </section>
+      <section>
+        <h3>全键盘导航</h3>
+        <p>两侧栏被输入法抢占时可用 <kbd>Ctrl+Alt+Shift+B</kbd> / <kbd>Ctrl+Alt+Shift+I</kbd>。<kbd>Ctrl+Alt+B</kbd>/<kbd>Ctrl+Alt+I</kbd> 是「去代码树/去解释窗口」：面板已开但焦点在代码区时按一下把焦点送进去，焦点已在面板内时再按才收起。任意窗口（含对话框、提交详情、解释栏、代码树、引用列表）都支持完整 Vim 导航：<kbd>j</kbd>/<kbd>k</kbd> 在可操作项之间移动或逐行滚动，可带计数（<kbd>5j</kbd>）；<kbd>Ctrl+d</kbd>/<kbd>Ctrl+u</kbd> 半屏、<kbd>Ctrl+f</kbd>/<kbd>Ctrl+b</kbd>/<kbd>PageDown</kbd>/<kbd>PageUp</kbd> 整屏，阅读区还可用 <kbd>Space</kbd>/<kbd>Shift+Space</kbd>；<kbd>gg</kbd>/<kbd>G</kbd> 首个/最后一个目标（<kbd>12gg</kbd>/<kbd>12G</kbd> 跳到第 12 个），<kbd>H</kbd>/<kbd>M</kbd>/<kbd>L</kbd> 首/中/末（阅读区为顶部/中部/底部），<kbd>0</kbd>/<kbd>^</kbd>/<kbd>$</kbd> 首/末项（阅读区横向滚到最左/最右），<kbd>o</kbd> 激活当前项（<kbd>Enter</kbd> 走浏览器原生）；<kbd>/</kbd> 在当前窗口内搜索，<kbd>Enter</kbd> 定位、<kbd>n</kbd>/<kbd>N</kbd> 下一个/上一个、<kbd>Esc</kbd> 清除高亮。解释栏里先 <kbd>Tab</kbd> 或点击链接进入项列表模式，<kbd>Esc</kbd> 退回阅读模式；文件树里 <kbd>/</kbd> 直接跳到过滤框。任意窗口按 <kbd>Ctrl+Alt+K</kbd> 出现字母标签（代码区按行打标签，输入标签即跳到该行；其它元素输入标签即点击/聚焦）；按 <kbd>Ctrl+Alt+F</kbd> 输入两个字符，匹配处出现标签，输入标签即跳转。标签层自动限定在当前顶层窗口，不会点到遮罩后面的元素；打开侧栏/对话框后焦点自动跟进；历史菜单/文件树右键菜单支持 ↑/↓ + Enter，Esc 返回；分隔条聚焦后 ←/→ 调整宽度。</p>
       </section>
       <section class="vim-help-note">
         <h3>浏览器限制</h3>
@@ -370,7 +400,7 @@
     <button type="button" data-action="refresh-tree">刷新文件树</button>
   </div>
 
-  <div id="animation-overlay" class="animation-overlay" hidden>
+  <div id="animation-overlay" class="animation-overlay" role="dialog" aria-modal="true" aria-label="3D 动画演示" hidden>
     <div class="animation-bar">
       <span class="animation-title">3D 动画演示</span>
       <span class="animation-hint">拖动旋转视角 · 空格播放/暂停 · ←/→ 切换步骤 · Esc 关闭</span>

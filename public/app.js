@@ -2,15 +2,26 @@
 // grill: 成品检索=skill 库无 code-reader 前端成品; 输入固定=固定 DOM id 与 API 响应; 步骤机械=按仓库/分支/同步事件渲染; 判读固定=API JSON 结果; 失效场景=构造不出（仅本应用）
 import { createEditor, THEMES } from './editor.js';
 import { createAnimationHtml } from './animation-html.js';
+import { createKeyboardNav } from './keyboard-nav.js';
+import { createVimNav } from './vim-nav.js';
 
 const $ = (selector) => document.querySelector(selector);
 // v2：本地主题成为默认选项后重置旧版本保存的配色选择，避免历史
 // localStorage（多为早期 one-dark）压过「默认本地」。用户重新选择后照常持久化。
 const THEME_KEY = 'code-reader-theme-v2';
 const LAYOUT_KEY = 'code-reader-layout';
+// 明确要求动画解释的关键词；与问题输入框的复选框共同决定是否向 LLM 请求 3D 动画。
+const ANIMATION_HINT_RE = /(动画|动图|三维|3D|可视化|three\.?js|animation)/i;
 
 const elements = {
   openMenu: $('#open-menu'),
+  workspaceBar: $('#workspace-bar'),
+  workspaceTabs: $('#workspace-tabs'),
+  workspaceAdd: $('#workspace-add'),
+  sidebar: $('.sidebar'),
+  insights: $('.insights'),
+  sidebarTrigger: $('#sidebar-trigger'),
+  insightsTrigger: $('#insights-trigger'),
   historyMenuButton: $('#history-menu-button'),
   historyMenu: $('#history-menu'),
   docsSettings: $('#docs-settings'),
@@ -90,6 +101,7 @@ const elements = {
   questionEditor: $('#question-editor'),
   questionAnchor: $('#question-anchor'),
   questionInput: $('#question-input'),
+  questionAnimation: $('#question-animation'),
   questionError: $('#question-error'),
   questionCancel: $('#question-cancel'),
   questionSubmit: $('#question-submit'),
@@ -118,6 +130,8 @@ const elements = {
   editorEnvProgress: $('#editor-env-progress'),
   editorEnvRefresh: $('#editor-env-refresh'),
   editorEnvSave: $('#editor-env-save'),
+  navTree: $('#nav-tree'),
+  navInsights: $('#nav-insights'),
 };
 
 const state = {
@@ -126,6 +140,9 @@ const state = {
   filesLower: [],
   fileSet: new Set(),
   tree: null,
+  filterMatches: [],
+  filterTotal: 0,
+  filterIndex: -1,
   collapsed: new Set(),
   currentFile: null,
   source: null,
@@ -153,15 +170,23 @@ const state = {
   docsConfig: { directories: [], webEnabled: true },
   docsDraft: [],
   dirBrowserPath: '',
+  dirParent: null,
+  dirEntries: [],
+  dirSelected: -1,
+  dirTypeBuffer: '',
+  dirTypeTimer: null,
   layout: { sidebar: 252, insights: 372, collapsed: false },
   theme: 'one-dark',
   themeExplicit: false,
   editorMode: 'editor',
   editorEnv: null,
   editorProfile: null,
-  readingTrail: [],
+readingTrail: [],
   animationOpen: false,
   animationRuntime: null,
+  workspace: { entries: [], activeKey: null },
+  sessionKey: null,
+  switching: false,
 };
 
 let animationUrls = null;
@@ -172,9 +197,18 @@ if (savedTheme && (savedTheme === 'local' || THEMES.some((theme) => theme.id ===
   state.themeExplicit = true;
 }
 
+// 工作区：每个打开过的仓库一份会话快照（payload + 当前文件/光标/折叠目录/分支）。
+// 切换仓库只重建视图，不重新扫描代码树；页面刷新后由服务端 workspace.json 恢复。
+const sessions = new Map();
+// 切仓期间再次触发快捷键/点击时只保留最后一个目标，当前切换结束后接着执行，
+// 让连续按 Ctrl+Alt+] 时仍能落到最后想要的仓库。
+let pendingWorkspaceSwitch = null;
 const jumpStack = [];
 const jumpForwardStack = [];
 let treeFocusIndex = -1;
+// 文件树的 gg 连击窗口与数字计数（与 Vim 一致：gg 回首个文件、5j 下移 5 行）。
+let treeGPressedAt = 0;
+let treeCount = '';
 let editor = null;
 
 async function api(url, options = {}) {
@@ -222,7 +256,8 @@ function loadLayout() {
     state.layout = {
       sidebar: clamp(Number(saved.sidebar) || 252, 180, 420),
       insights: clamp(Number(saved.insights) || 372, 280, 640),
-      collapsed: Boolean(saved.collapsed),
+      // 旧的“永久折叠”模式已由悬停覆盖层取代，历史值不再生效。
+      collapsed: false,
     };
   } catch {
     state.layout = { sidebar: 252, insights: 372, collapsed: false };
@@ -233,8 +268,10 @@ function applyLayout() {
   const app = document.getElementById('app');
   app.style.setProperty('--sidebar-width', `${state.layout.sidebar}px`);
   app.style.setProperty('--insights-width', `${state.layout.insights}px`);
-  app.classList.toggle('insights-collapsed', state.layout.collapsed);
-  elements.insightsExpand.hidden = !state.layout.collapsed;
+  elements.splitterLeft.setAttribute('aria-valuenow', String(state.layout.sidebar));
+  elements.splitterRight.setAttribute('aria-valuenow', String(state.layout.insights));
+  app.classList.remove('insights-collapsed');
+  elements.insightsExpand.hidden = true;
 }
 
 function saveLayout() {
@@ -264,6 +301,138 @@ function initSplitter(side) {
     handle.addEventListener('pointermove', onMove);
     handle.addEventListener('pointerup', onUp);
   });
+  // 分隔条也可用键盘调整：聚焦后 ←/→ 步进，Shift 加速。
+  handle.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 40 : 12;
+    if (event.key === 'Home') {
+      if (side === 'left') state.layout.sidebar = 180;
+      else state.layout.insights = 280;
+    } else if (event.key === 'End') {
+      if (side === 'left') state.layout.sidebar = 420;
+      else state.layout.insights = 640;
+    } else if (side === 'left') {
+      state.layout.sidebar = clamp(state.layout.sidebar + (event.key === 'ArrowRight' ? step : -step), 180, 420);
+    } else {
+      state.layout.insights = clamp(state.layout.insights + (event.key === 'ArrowLeft' ? step : -step), 280, 640);
+    }
+    applyLayout();
+    saveLayout();
+  });
+}
+
+// 两侧栏默认收起为覆盖层：鼠标移到左/右边缘或面板上滑入，离开后延迟收起。
+// 焦点进入面板（\e 聚焦文件树、点击过滤框/历史项）时保持展开。
+const PANEL_HIDE_DELAY = 220;
+
+function initAutoPanels() {
+  const app = document.getElementById('app');
+  const panels = [
+    { name: 'sidebar', el: elements.sidebar, trigger: elements.sidebarTrigger, splitter: elements.splitterLeft },
+    { name: 'insights', el: elements.insights, trigger: elements.insightsTrigger, splitter: elements.splitterRight },
+  ].filter((panel) => panel.el && panel.trigger);
+  const timers = new Map();
+  // 收起的侧栏只是 transform 移出屏幕，内部元素仍会进入 Tab 顺序（焦点环
+  // 落到不可见处）。用 inert 把隐藏面板整体移出焦点/交互范围。
+  const syncInert = (panel) => {
+    if (!panel) return;
+    if (app.classList.contains(`${panel.name}-visible`)) panel.el.removeAttribute('inert');
+    else panel.el.setAttribute('inert', '');
+  };
+  const reveal = (panel, { force = false } = {}) => {
+    if (!panel) return;
+    if (!force && panel.suppress) return;
+    clearTimeout(timers.get(panel.name));
+    app.classList.add(`${panel.name}-visible`);
+    syncInert(panel);
+  };
+  const conceal = (panel) => {
+    if (!panel) return;
+    if (panel.pinned) return;
+    // 焦点在面板里就保持展开——鼠标点击解释窗口/文件树后焦点也在面板内，
+    // 只看 :focus-visible 会让鼠标移开时把正在键盘阅读的面板收走。
+    const active = document.activeElement;
+    if (active && panel.el.contains(active)) return;
+    if (panel.el.matches(':hover') || panel.splitter?.matches(':hover')) return;
+    if (panel.splitter?.classList.contains('dragging')) return;
+    app.classList.remove(`${panel.name}-visible`);
+    syncInert(panel);
+  };
+  const scheduleConceal = (panel) => {
+    if (!panel) return;
+    clearTimeout(timers.get(panel.name));
+    timers.set(panel.name, setTimeout(() => conceal(panel), PANEL_HIDE_DELAY));
+  };
+  // Ctrl+Alt+B / Ctrl+Alt+I 的面板语义在 toggle*Panel 里统一处理（见「去这个窗口」注释），
+  // 这里的 toggle 只保留给加载状态等内部使用（可见则关闭并解除钉住，隐藏则钉住并打开）。
+  const toggle = (panel) => {
+    if (!panel) return false;
+    if (app.classList.contains(`${panel.name}-visible`)) {
+      panel.pinned = false;
+      clearTimeout(timers.get(panel.name));
+      app.classList.remove(`${panel.name}-visible`);
+      syncInert(panel);
+      // 面板在鼠标下方收起时，避免指针立刻触发 pointerenter 又弹开。
+      panel.suppress = true;
+      clearTimeout(panel.suppressTimer);
+      panel.suppressTimer = setTimeout(() => { panel.suppress = false; }, 400);
+    } else {
+      panel.pinned = true;
+      panel.suppress = false;
+      reveal(panel, { force: true });
+    }
+    return true;
+  };
+  for (const panel of panels) {
+    panel.trigger.addEventListener('pointerenter', () => reveal(panel));
+    panel.trigger.addEventListener('pointerleave', () => scheduleConceal(panel));
+    panel.el.addEventListener('pointerenter', () => reveal(panel));
+    panel.el.addEventListener('pointerleave', () => scheduleConceal(panel));
+    panel.el.addEventListener('focusin', () => reveal(panel, { force: true }));
+    panel.el.addEventListener('focusout', (event) => {
+      if (panel.el.contains(event.relatedTarget)) return;
+      scheduleConceal(panel);
+    });
+    panel.splitter?.addEventListener('pointerenter', () => reveal(panel));
+    panel.splitter?.addEventListener('pointerleave', () => scheduleConceal(panel));
+    // 初始默认收起：同步一次 inert，避免隐藏面板里的元素参与 Tab 顺序。
+    syncInert(panel);
+  }
+  const byName = (name) => panels.find((panel) => panel.name === name);
+  const hidePanel = (panel) => {
+    if (!panel) return;
+    clearTimeout(timers.get(panel.name));
+    app.classList.remove(`${panel.name}-visible`);
+    syncInert(panel);
+  };
+  window.__crPanels = {
+    show(name) {
+      reveal(byName(name), { force: true });
+    },
+    hide(name) {
+      hidePanel(byName(name));
+    },
+    hideAll() {
+      for (const panel of panels) hidePanel(panel);
+    },
+    toggle(name) {
+      return toggle(byName(name));
+    },
+    pin(name) {
+      const panel = byName(name);
+      if (!panel) return;
+      panel.pinned = true;
+      panel.suppress = false;
+      reveal(panel, { force: true });
+    },
+    isPinned(name) {
+      return Boolean(byName(name)?.pinned);
+    },
+    isVisible(name) {
+      return app.classList.contains(`${name}-visible`);
+    },
+  };
 }
 
 function applyShellTheme(palette) {
@@ -341,6 +510,14 @@ async function loadReadingHistory() {
   renderReadingHistory();
 }
 
+function menuButtons(menu) {
+  return [...menu.querySelectorAll('button:not(:disabled)')];
+}
+
+function focusFirstMenuItem(menu) {
+  menuButtons(menu)[0]?.focus();
+}
+
 function renderReadingHistory() {
   const menu = elements.historyMenu;
   menu.replaceChildren();
@@ -389,7 +566,7 @@ function renderReadingHistory() {
   menu.append(footer);
 }
 
-async function openHistoryEntry(entry) {
+async function openHistoryEntry(entry, { silent = false } = {}) {
   try {
     const data = entry.source === 'remote'
       ? await api('/api/repositories/open-remote', { method: 'POST', body: JSON.stringify({ url: entry.path, resume: true }) })
@@ -398,11 +575,332 @@ async function openHistoryEntry(entry) {
     if (data.resume?.file && state.files.includes(data.resume.file)) {
       await selectFile(data.resume.file, { line: data.resume.line || 1, character: data.resume.character || 0 });
     }
-    showNotice(data.resume?.file
-      ? `已恢复 ${entry.name} · ${data.resume.file}:${data.resume.line}`
-      : `已打开 ${entry.name}（暂无上次文件位置）`);
+    if (!silent) {
+      showNotice(data.resume?.file
+        ? `已恢复 ${entry.name} · ${data.resume.file}:${data.resume.line}`
+        : `已打开 ${entry.name}（暂无上次文件位置）`);
+    }
   } catch (error) {
-    showNotice(`打开历史失败：${error.message}`, { error: true });
+    if (!silent) showNotice(`打开历史失败：${error.message}`, { error: true });
+    else console.error('[workspace] 恢复阅读历史失败：', error);
+  }
+}
+
+function repositoryKey(repository) {
+  if (!repository) return null;
+  if (repository.source === 'remote') return `remote:${repository.remoteUrl || repository.root}`;
+  return `local:${repository.root}`;
+}
+
+function renderWorkspaceTabs() {
+  const entries = state.workspace?.entries || [];
+  elements.workspaceBar.hidden = entries.length === 0;
+  elements.workspaceTabs.replaceChildren();
+  for (const [index, entry] of entries.entries()) {
+    const active = entry.key === state.sessionKey;
+    const tab = document.createElement('div');
+    tab.className = `workspace-tab${active ? ' active' : ''}`;
+    tab.dataset.key = entry.key;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', String(active));
+    const shortcut = index < 9 ? ` · Ctrl+Alt+Shift+${index + 1}` : '';
+    tab.title = `${entry.path}${shortcut}`;
+    tab.addEventListener('click', () => activateWorkspaceEntry(entry));
+    // 页签上方固定显示直达快捷键，便于发现；第 10 个起没有直达键（保留空行对齐）。
+    const key = document.createElement('span');
+    key.className = 'workspace-tab-key';
+    key.textContent = index < 9 ? `Ctrl+Alt+Shift+${index + 1}` : '';
+    key.setAttribute('aria-hidden', 'true');
+    const name = document.createElement('button');
+    name.type = 'button';
+    name.className = 'workspace-tab-name';
+    name.textContent = entry.name;
+    name.title = tab.title;
+    name.addEventListener('click', (event) => {
+      event.stopPropagation();
+      activateWorkspaceEntry(entry);
+    });
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'workspace-tab-close';
+    close.textContent = '×';
+    close.title = `从工作区关闭 ${entry.name}`;
+    close.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closeWorkspaceEntry(entry);
+    });
+    const main = document.createElement('span');
+    main.className = 'workspace-tab-main';
+    main.append(name, close);
+    tab.append(key, main);
+    elements.workspaceTabs.append(tab);
+  }
+}
+
+function openWorkspaceEntry(entry, { resume = false, activate = true } = {}) {
+  const local = entry.source !== 'remote';
+  return api(local ? '/api/repositories/open-local' : '/api/repositories/open-remote', {
+    method: 'POST',
+    body: JSON.stringify(local ? { path: entry.path, resume, activate } : { url: entry.path, resume, activate }),
+  });
+}
+
+// 保存当前仓库的阅读位置，供切走后再切回。
+function captureSession() {
+  if (!state.sessionKey) return null;
+  const session = sessions.get(state.sessionKey);
+  if (!session) return null;
+  session.currentFile = state.currentFile;
+  if (state.currentFile && state.source) session.cursor = editor.getCursor();
+  session.activeLine = state.activeLine;
+  session.branches = state.branches;
+  session.collapsed = state.collapsed;
+  return session;
+}
+
+function storeSession(key, data, prepared = null) {
+  if (!key) return;
+  sessions.set(key, {
+    key,
+    data,
+    currentFile: state.currentFile,
+    cursor: state.currentFile && state.source ? editor.getCursor() : { line: 1, character: 0 },
+    activeLine: state.activeLine,
+    branches: state.branches,
+    branchesLoaded: true,
+    collapsed: state.collapsed,
+    prepared: prepared || null,
+  });
+  if (prepared) rememberPrepared(key);
+}
+
+async function applySession(session) {
+  closeNvim();
+  closeCommitOverlay();
+  state.sessionKey = session.key;
+  const prepared = preparedForSession(session);
+  applyRepositoryPayload(session.data, {
+    collapsed: session.collapsed,
+    branches: session.branches || [],
+    prepared,
+  });
+  if (session.currentFile && state.files.includes(session.currentFile)) {
+    await selectFile(session.currentFile, {
+      line: session.cursor?.line || 1,
+      character: session.cursor?.character || 0,
+    });
+  }
+  // 预载时已取回分支就绪标记，切仓不再触发一次 git for-each-ref。
+  if (!session.branchesLoaded) loadBranches();
+}
+
+async function activateWorkspaceEntry(entry, options = {}) {
+  if (!entry) return;
+  if (state.switching) {
+    pendingWorkspaceSwitch = { entry, options };
+    return;
+  }
+  if (state.sessionKey === entry.key && state.repository) return;
+  state.switching = true;
+  elements.sourceStatus.textContent = `正在切换到 ${entry.name}…`;
+  try {
+    captureSession();
+    const cached = sessions.get(entry.key);
+    if (cached?.data) {
+      await applySession(cached);
+      state.workspace.activeKey = entry.key;
+      renderWorkspaceTabs();
+      api('/api/workspace/activate', { method: 'POST', body: JSON.stringify({ key: entry.key }) }).catch(() => {});
+    } else {
+      const data = await openWorkspaceEntry(entry, { resume: true });
+      await loadRepository(data);
+      if (data.resume?.file && state.files.includes(data.resume.file)) {
+        await selectFile(data.resume.file, { line: data.resume.line || 1, character: data.resume.character || 0 });
+      }
+    }
+    if (options.announce) showNotice(`已切换到 ${entry.name}`);
+    // 页签点击/标签跳转会重建页签 DOM，焦点会掉到 body：切换完成后送进代码区。
+    const active = document.activeElement;
+    if ((!active || active === document.body || active.closest?.('#workspace-bar')) && state.currentFile) {
+      editor?.focus();
+    }
+  } catch (error) {
+    showNotice(`切换仓库失败：${error.message}`, { error: true });
+  } finally {
+    state.switching = false;
+    elements.sourceStatus.textContent = state.source ? `${state.source.lines} 行 · ${state.source.path}` : '';
+    const pending = pendingWorkspaceSwitch;
+    pendingWorkspaceSwitch = null;
+    if (pending && pending.entry.key !== state.sessionKey) activateWorkspaceEntry(pending.entry, pending.options);
+  }
+}
+
+// Ctrl+Alt+[ / ]：按工作区页签顺序循环切换（跳过当前仓库）。
+function activateWorkspaceByOffset(offset) {
+  const entries = state.workspace?.entries || [];
+  if (entries.length < 2) return false;
+  let index = entries.findIndex((entry) => entry.key === state.sessionKey);
+  if (index < 0) index = entries.findIndex((entry) => entry.key === state.workspace.activeKey);
+  if (index < 0) index = 0;
+  const target = entries[(index + offset + entries.length) % entries.length];
+  if (!target || target.key === state.sessionKey) return false;
+  activateWorkspaceEntry(target);
+  return true;
+}
+
+// Ctrl+Alt+Shift+1..9：直达第 N 个工作区页签。
+function activateWorkspaceByIndex(index) {
+  const target = (state.workspace?.entries || [])[index];
+  if (!target || target.key === state.sessionKey) return false;
+  activateWorkspaceEntry(target);
+  return true;
+}
+
+async function closeWorkspaceEntry(entry) {
+  if (!entry || state.switching) return;
+  state.switching = true;
+  try {
+    captureSession();
+    const result = await api('/api/workspace/close', { method: 'POST', body: JSON.stringify({ key: entry.key }) });
+    sessions.delete(entry.key);
+    const wasActive = state.sessionKey === entry.key;
+    state.workspace = { entries: result.entries || [], activeKey: result.activeKey || null };
+    if (!wasActive) {
+      renderWorkspaceTabs();
+      return;
+    }
+    state.sessionKey = null;
+    const next = (result.entries || []).find((candidate) => candidate.key === result.activeKey);
+    renderWorkspaceTabs();
+    state.switching = false;
+    if (next) await activateWorkspaceEntry(next);
+    else clearWorkspaceView();
+  } catch (error) {
+    showNotice(`关闭仓库失败：${error.message}`, { error: true });
+  } finally {
+    state.switching = false;
+  }
+}
+
+function clearWorkspaceView() {
+  closeNvim();
+  closeCommitOverlay();
+  state.repository = null;
+  state.files = [];
+  state.filesLower = [];
+  state.fileSet = new Set();
+  state.tree = null;
+  state.status = {};
+  state.branches = [];
+  state.currentFile = null;
+  state.source = null;
+  state.activeLine = null;
+  state.history = null;
+  state.explanation = null;
+  state.commitDetail = null;
+  state.faqEntries = [];
+  state.faqKey = null;
+  state.historyCache.clear();
+  state.lsp = { available: false, engine: null, initialized: false, detail: '' };
+  state.sessionKey = null;
+  jumpStack.length = 0;
+  jumpForwardStack.length = 0;
+  closeQuestion();
+  elements.treeFilter.value = '';
+  renderRepository();
+  renderTree();
+  renderSource();
+  renderHistory();
+  renderExplanation();
+  renderFaq();
+  renderLspState();
+  // 工作区全关后没有仓库入口，先把文件树滑出来提示「打开」。
+  window.__crPanels?.show('sidebar');
+}
+
+// 后台预载工作区里的其它仓库：切换时直接命中内存会话，不再等待仓库扫描。
+// 预载同时补齐分支列表与代码树派生数据，并在空闲时建树，避免切仓时卡主线程。
+async function preloadWorkspaceEntry(entry) {
+  if (!entry || sessions.has(entry.key) || entry.key === state.sessionKey) return;
+  try {
+    const data = await openWorkspaceEntry(entry, { resume: true, activate: false });
+    if (!(state.workspace.entries || []).some((candidate) => candidate.key === entry.key)) return;
+    // 预载期间用户已切到该仓库：已有会话优先，勿用旧的预载结果覆盖。
+    if (state.sessionKey === entry.key || sessions.has(entry.key)) return;
+    const session = {
+      key: entry.key,
+      data,
+      currentFile: data.resume?.file && data.files.includes(data.resume.file) ? data.resume.file : null,
+      cursor: { line: data.resume?.line || 1, character: data.resume?.character || 0 },
+      activeLine: null,
+      branches: [],
+      branchesLoaded: false,
+      collapsed: null,
+      prepared: null,
+    };
+    sessions.set(entry.key, session);
+    api(`/api/repositories/${encodeURIComponent(data.repository.id)}/branches`)
+      .then((result) => {
+        if (sessions.get(entry.key) !== session) return;
+        session.branches = result.branches || [];
+        session.branchesLoaded = true;
+      })
+      .catch(() => {});
+    scheduleIdle(() => {
+      if (sessions.get(entry.key) !== session || session.prepared) return;
+      preparePayloadIncremental(data, (prepared) => {
+        if (sessions.get(entry.key) !== session || session.prepared) return;
+        session.prepared = prepared;
+        if (prepared) rememberPrepared(entry.key);
+        else session.preparedUnavailable = true;
+      });
+    });
+  } catch {
+    // 预载失败不打扰当前阅读；用户切到该仓库时再提示
+  }
+}
+
+// 页面加载即恢复工作区与上次位置：服务端 workspace.json 记录打开的仓库与当前仓库，
+// 每个仓库的 file/line/character 由阅读历史保存。
+async function restoreWorkspace() {
+  try {
+    const workspace = await api('/api/workspace');
+    state.workspace = { entries: workspace.entries || [], activeKey: workspace.activeKey || null };
+    renderWorkspaceTabs();
+    // 用户已抢先手动打开仓库时不覆盖当前视图。
+    if (state.repository) return;
+    if (!state.workspace.entries.length) {
+      // 旧版本升级：工作区为空时退回最近一次阅读历史。
+      const history = await api('/api/history').catch(() => ({ repositories: [] }));
+      const recent = (history.repositories || [])[0];
+      if (recent) await openHistoryEntry(recent, { silent: true });
+      return;
+    }
+    const active = state.workspace.entries.find((entry) => entry.key === state.workspace.activeKey)
+      || state.workspace.entries[0];
+    try {
+      const data = await openWorkspaceEntry(active, { resume: true, activate: true });
+      await loadRepository(data);
+      if (data.resume?.file && state.files.includes(data.resume.file)) {
+        await selectFile(data.resume.file, {
+          line: data.resume.line || 1,
+          character: data.resume.character || 0,
+        });
+      }
+    } catch (error) {
+      showNotice(`恢复工作区仓库 ${active.name} 失败：${error.message}`, { error: true });
+    }
+    // 单个仓库恢复失败不影响其它页签；其余仓库后台预载。
+    state.workspace.entries
+      .filter((entry) => entry.key !== state.sessionKey)
+      .forEach((entry, index) => {
+        setTimeout(() => preloadWorkspaceEntry(entry), 200 + index * 300);
+      });
+  } catch (error) {
+    console.error('[workspace] 恢复失败：', error);
+  } finally {
+    // 没有任何仓库可恢复时，滑出文件树提示从「打开」进入。
+    if (!state.repository) window.__crPanels?.show('sidebar');
   }
 }
 
@@ -476,34 +974,106 @@ async function openDocsDialog() {
   elements.docsDialog.showModal();
 }
 
+function selectDirIndex(index, { focus = true } = {}) {
+  const rows = [...elements.dirList.querySelectorAll('.dir-row')];
+  if (!rows.length) {
+    state.dirSelected = -1;
+    return;
+  }
+  const target = Math.max(0, Math.min(index, rows.length - 1));
+  state.dirSelected = target;
+  rows.forEach((row, rowIndex) => {
+    const selected = rowIndex === target;
+    row.classList.toggle('selected', selected);
+    row.setAttribute('aria-selected', String(selected));
+    // roving tabindex：整个目录列表只占一个 Tab 停靠点，方向键在项间移动。
+    row.tabIndex = selected ? 0 : -1;
+  });
+  const row = rows[target];
+  row.scrollIntoView({ block: 'nearest' });
+  if (focus) row.focus();
+}
+
+// 双击/Enter 才“确认”选中：回填路径并进入该目录；单击只高亮。
+async function enterDirIndex(index) {
+  const entry = state.dirEntries[index];
+  if (!entry) return;
+  elements.localPath.value = entry.path;
+  await loadDirectory(entry.path);
+  // 进入后由 loadDirectory 把焦点放到新目录的当前项，继续按字母导航。
+}
+
+// 字母导航：与文件管理器一致，连续同字母循环，800ms 内多字母按前缀匹配。
+function typeAheadDir(char) {
+  const lower = char.toLowerCase();
+  const entries = state.dirEntries;
+  if (!entries.length) return;
+  const count = entries.length;
+  let buffer = state.dirTypeBuffer;
+  let start = state.dirSelected >= 0 ? state.dirSelected : 0;
+  if (buffer && buffer.length === 1 && buffer === lower) {
+    start = (state.dirSelected + 1 + count) % count;
+  } else {
+    buffer += lower;
+  }
+  state.dirTypeBuffer = buffer;
+  clearTimeout(state.dirTypeTimer);
+  state.dirTypeTimer = setTimeout(() => { state.dirTypeBuffer = ''; }, 800);
+  for (let step = 0; step < count; step += 1) {
+    const index = (start + step) % count;
+    if (entries[index].name.toLowerCase().startsWith(buffer)) {
+      selectDirIndex(index);
+      return;
+    }
+  }
+}
+
+function renderDirList() {
+  elements.dirList.replaceChildren();
+  state.dirEntries.forEach((entry, index) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'dir-row';
+    row.dataset.path = entry.path;
+    row.dataset.index = String(index);
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', 'false');
+    row.tabIndex = -1;
+    row.textContent = entry.name;
+    if (entry.git) {
+      const badge = document.createElement('span');
+      badge.className = 'dir-git';
+      badge.textContent = 'Git';
+      row.append(badge);
+    }
+    row.addEventListener('click', () => selectDirIndex(index));
+    row.addEventListener('dblclick', () => enterDirIndex(index));
+    elements.dirList.append(row);
+  });
+  if (!state.dirEntries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'field-help';
+    empty.textContent = '该目录下没有子目录';
+    elements.dirList.append(empty);
+  }
+}
+
 async function loadDirectory(target) {
   elements.dirError.textContent = '';
   try {
     const data = await api(`/api/fs/list?path=${encodeURIComponent(target)}`);
     state.dirBrowserPath = data.path;
     state.dirParent = data.parent;
+    state.dirEntries = data.entries || [];
+    state.dirSelected = -1;
+    state.dirTypeBuffer = '';
     elements.dirPath.textContent = data.path;
     elements.dirUp.disabled = !data.parent;
-    elements.dirList.replaceChildren();
-    for (const entry of data.entries) {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'dir-row';
-      row.textContent = entry.name;
-      if (entry.git) {
-        const badge = document.createElement('span');
-        badge.className = 'dir-git';
-        badge.textContent = 'Git';
-        row.append(badge);
-      }
-      row.addEventListener('click', () => loadDirectory(entry.path));
-      elements.dirList.append(row);
-    }
-    if (!data.entries.length) {
-      const empty = document.createElement('div');
-      empty.className = 'field-help';
-      empty.textContent = '该目录下没有子目录';
-      elements.dirList.append(empty);
+    renderDirList();
+    // 打开/切换目录后焦点进入列表当前项，↑/↓ 才能从当前项开始移动。
+    if (!elements.dirBrowser.hidden) {
+      if (state.dirEntries.length) selectDirIndex(0);
+      else elements.dirList.focus({ preventScroll: true });
     }
   } catch (error) {
     elements.dirError.textContent = error.message;
@@ -534,29 +1104,165 @@ function closeOpenDialog() {
   if (!state.opening) elements.openDialog.close();
 }
 
+function isSortedPaths(files) {
+  for (let index = 1; index < files.length; index += 1) {
+    if (files[index - 1] > files[index]) return false;
+  }
+  return true;
+}
+
+// 顺序建树：git ls-files 基本按路径排序，利用“与上一条路径的公共前缀”复用节点，
+// 省掉逐段 Map 查找。kernel 仓（约 10 万文件）比逐段 has/get 快约 2 倍；
+// 乱序输入先排序副本，保持原有节点集合不变。
 function buildTree(files) {
-  const root = { name: '', path: '', directory: true, children: new Map() };
-  for (const file of files) {
+  const list = isSortedPaths(files) ? files : [...files].sort();
+  const root = { name: '', path: '', directory: true, children: [] };
+  const stack = [root];
+  let lastParts = [];
+  for (const file of list) {
     const parts = file.split('/');
-    let node = root;
-    parts.forEach((part, index) => {
-      if (!node.children.has(part)) {
-        const directory = index < parts.length - 1;
-        node.children.set(part, {
-          name: part,
-          path: parts.slice(0, index + 1).join('/'),
-          directory,
-          children: directory ? new Map() : null,
-        });
+    let common = 0;
+    const limit = Math.min(lastParts.length, parts.length);
+    while (common < limit && lastParts[common] === parts[common]) common += 1;
+    stack.length = common + 1;
+    let parent = stack[common];
+    let prefix = common === 0 ? '' : parent.path;
+    for (let index = common; index < parts.length; index += 1) {
+      const part = parts[index];
+      const directory = index < parts.length - 1;
+      const path = prefix ? `${prefix}/${part}` : part;
+      const node = { name: part, path, directory, children: directory ? [] : null };
+      parent.children.push(node);
+      if (directory) {
+        stack.push(node);
+        parent = node;
+        prefix = path;
       }
-      node = node.children.get(part);
-    });
+    }
+    lastParts = parts;
   }
   return root;
 }
 
+// 工作区会话的派生数据（小写表/路径集合/代码树）按仓库缓存：切仓时不再重扫
+// 10 万路径（约 300–450ms）。只缓存最近若干个仓库，避免多仓工作区常驻过多内存。
+const PREPARED_LIMIT = 4;
+const MAX_PREPARED_FILES = 200_000;
+const preparedOrder = [];
+
+function preparePayload(data) {
+  const files = Array.isArray(data?.files) ? data.files : [];
+  if (files.length > MAX_PREPARED_FILES) return null;
+  return {
+    filesLower: files.map((filePath) => filePath.toLowerCase()),
+    fileSet: new Set(files),
+    tree: buildTree(files),
+  };
+}
+
+function rememberPrepared(key) {
+  if (!key) return;
+  const existing = preparedOrder.indexOf(key);
+  if (existing >= 0) preparedOrder.splice(existing, 1);
+  preparedOrder.push(key);
+  while (preparedOrder.length > PREPARED_LIMIT) {
+    const victim = preparedOrder.findIndex((candidate) => candidate !== state.sessionKey);
+    if (victim < 0) break;
+    const [evicted] = preparedOrder.splice(victim, 1);
+    const session = sessions.get(evicted);
+    if (session) session.prepared = null;
+  }
+}
+
+function preparedForSession(session) {
+  if (!session?.data) return null;
+  if (session.prepared) {
+    rememberPrepared(session.key);
+    return session.prepared;
+  }
+  if (session.preparedUnavailable) return null;
+  session.prepared = preparePayload(session.data);
+  if (session.prepared) rememberPrepared(session.key);
+  else session.preparedUnavailable = true;
+  return session.prepared;
+}
+
+const scheduleIdle = typeof window.requestIdleCallback === 'function'
+  ? (callback) => window.requestIdleCallback(callback, { timeout: 1500 })
+  : (callback) => setTimeout(callback, 120);
+
+// 预载仓库的派生数据切成 ≤12ms 的片：9.8 万路径一次建树约 280ms，直接放在
+// requestIdleCallback 里会在 j/k 导航时卡出一个明显长任务。这里分三段
+// （小写表 → 路径集合 → 代码树）逐片推进，片间让出主线程。
+function preparePayloadIncremental(data, onDone, { budgetMs = 10 } = {}) {
+  const files = Array.isArray(data?.files) ? data.files : [];
+  if (files.length > MAX_PREPARED_FILES) {
+    onDone(null);
+    return;
+  }
+  const treeFiles = isSortedPaths(files) ? files : [...files].sort();
+  const filesLower = new Array(files.length);
+  const fileSet = new Set();
+  const root = { name: '', path: '', directory: true, children: [] };
+  const stack = [root];
+  let lastParts = [];
+  let phase = 0;
+  let index = 0;
+  const advance = () => {
+    const deadline = performance.now() + budgetMs;
+    while (index < files.length) {
+      if (phase === 0) {
+        filesLower[index] = files[index].toLowerCase();
+      } else if (phase === 1) {
+        fileSet.add(files[index]);
+      } else {
+        const parts = treeFiles[index].split('/');
+        let common = 0;
+        const limit = Math.min(lastParts.length, parts.length);
+        while (common < limit && lastParts[common] === parts[common]) common += 1;
+        stack.length = common + 1;
+        let parent = stack[common];
+        let prefix = common === 0 ? '' : parent.path;
+        for (let partIndex = common; partIndex < parts.length; partIndex += 1) {
+          const part = parts[partIndex];
+          const directory = partIndex < parts.length - 1;
+          const path = prefix ? `${prefix}/${part}` : part;
+          const node = { name: part, path, directory, children: directory ? [] : null };
+          parent.children.push(node);
+          if (directory) {
+            stack.push(node);
+            parent = node;
+            prefix = path;
+          }
+        }
+        lastParts = parts;
+      }
+      index += 1;
+      if ((index & 127) === 0 && performance.now() > deadline) break;
+    }
+    if (index < files.length) {
+      scheduleIdle(advance);
+      return;
+    }
+    if (phase === 0) {
+      phase = 1;
+      index = 0;
+      scheduleIdle(advance);
+      return;
+    }
+    if (phase === 1) {
+      phase = 2;
+      index = 0;
+      scheduleIdle(advance);
+      return;
+    }
+    onDone({ filesLower, fileSet, tree: root });
+  };
+  scheduleIdle(advance);
+}
+
 function sortedChildren(node, filter) {
-  return [...node.children.values()]
+  return [...node.children]
     .filter((child) => {
       if (!filter) return true;
       if (!child.directory) return child.path.toLowerCase().includes(filter);
@@ -631,7 +1337,13 @@ function renderFilteredTree(filter) {
     total += 1;
     if (matches.length < TREE_FILTER_LIMIT) matches.push(state.files[index]);
   }
+  state.filterMatches = matches;
+  state.filterTotal = total;
+  // 只有一个候选时默认高亮，回车可直接打开；多候选由 ↑/↓ 选择。
+  if (state.filterIndex < 0 && total === 1 && matches.length === 1) state.filterIndex = 0;
+  if (state.filterIndex >= matches.length) state.filterIndex = matches.length - 1;
   if (!total) {
+    state.filterIndex = -1;
     const empty = document.createElement('div');
     empty.className = 'empty-tree';
     empty.textContent = '没有匹配的文件';
@@ -639,10 +1351,11 @@ function renderFilteredTree(filter) {
     return;
   }
   const fragment = document.createDocumentFragment();
-  for (const filePath of matches) {
+  matches.forEach((filePath, index) => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `tree-row tree-row-flat${state.currentFile === filePath ? ' active' : ''}`;
+    const focused = index === state.filterIndex;
+    button.className = `tree-row tree-row-flat${state.currentFile === filePath ? ' active' : ''}${focused ? ' key-focus' : ''}`;
     button.title = filePath;
     button.dataset.path = filePath;
     button.dataset.directory = 'false';
@@ -655,7 +1368,7 @@ function renderFilteredTree(filter) {
     name.textContent = filePath;
     button.append(iconElement, name);
     fragment.append(button);
-  }
+  });
   elements.fileTree.append(fragment);
   if (total > matches.length) {
     const note = document.createElement('div');
@@ -665,9 +1378,26 @@ function renderFilteredTree(filter) {
   }
 }
 
+function updateFilterFocus(scroll = true) {
+  const rows = [...elements.fileTree.querySelectorAll('.tree-row-flat')];
+  rows.forEach((row, index) => row.classList.toggle('key-focus', index === state.filterIndex));
+  if (scroll && state.filterIndex >= 0) rows[state.filterIndex]?.scrollIntoView({ block: 'nearest' });
+}
+
+function openFilteredFile(filePath) {
+  if (!filePath) return;
+  jumpStack.length = 0;
+  jumpForwardStack.length = 0;
+  selectFile(filePath);
+  elements.treeFilter.focus();
+}
+
 function renderTree() {
   elements.fileTree.replaceChildren();
   if (!state.tree) {
+    state.filterMatches = [];
+    state.filterTotal = 0;
+    state.filterIndex = -1;
     const empty = document.createElement('div');
     empty.className = 'empty-tree';
     empty.textContent = '打开一个本地或远程 Git 仓库';
@@ -679,6 +1409,9 @@ function renderTree() {
     renderFilteredTree(filter);
     return;
   }
+  state.filterMatches = [];
+  state.filterTotal = 0;
+  state.filterIndex = -1;
   const fragment = document.createDocumentFragment();
   let visible = 0;
 
@@ -800,16 +1533,26 @@ function renderBranches() {
 }
 
 async function loadBranches() {
-  if (!state.repository) {
+  const repository = state.repository;
+  if (!repository) {
     state.branches = [];
     renderBranches();
     return;
   }
+  let branches = [];
   try {
-    const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/branches`);
-    state.branches = data.branches || [];
+    const data = await api(`/api/repositories/${encodeURIComponent(repository.id)}/branches`);
+    branches = data.branches || [];
   } catch {
-    state.branches = [];
+    branches = [];
+  }
+  // 请求期间切换了仓库：丢弃过期响应，避免分支列表串仓。
+  if (state.repository?.id !== repository.id) return;
+  state.branches = branches;
+  const session = sessions.get(state.sessionKey);
+  if (session) {
+    session.branches = branches;
+    session.branchesLoaded = true;
   }
   renderBranches();
 }
@@ -964,12 +1707,16 @@ function renderLspState() {
 }
 
 async function pollLspStatus() {
-  if (!state.repository) return;
+  const repository = state.repository;
+  if (!repository) return;
+  let lsp;
   try {
-    state.lsp = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/lsp/status`);
+    lsp = await api(`/api/repositories/${encodeURIComponent(repository.id)}/lsp/status`);
   } catch {
-    state.lsp = { available: false, engine: null, initialized: false, detail: '状态查询失败' };
+    lsp = { available: false, engine: null, initialized: false, detail: '状态查询失败' };
   }
+  if (state.repository?.id !== repository.id) return;
+  state.lsp = lsp;
   renderLspState();
   if (state.lsp.initialized || (!state.lsp.available && state.lsp.detail)) {
     clearTimeout(state.lspTimer);
@@ -1035,7 +1782,7 @@ function applyEditorAvailability() {
   const available = Boolean(state.editorEnv?.available);
   elements.tabNvim.disabled = !available;
   elements.tabNvim.title = available
-    ? '在浏览器内运行本地 vim/neovim（真实插件与键位）'
+    ? '在浏览器内运行本地 vim/neovim（真实插件与键位）· Ctrl+Alt+2'
     : '未检测到本地 vim/neovim：使用内置编辑器（点左下角「编辑器环境」关联）';
   elements.editorTabsHint.textContent = available
     ? 'vim/neovim 为真实本地进程：:w 会写盘，插件与 LSP 使用你的本地配置'
@@ -1189,6 +1936,8 @@ function setEditorMode(mode) {
     editor?.focus();
     return;
   }
+  // nvim 终端优先占满代码区：切到 nvim 时收起两侧覆盖面板。
+  window.__crPanels?.hideAll();
   const file = state.currentFile;
   const line = file ? editor.getCursor().line : 1;
   window.CodeReaderTerminal?.open({ repositoryId: state.repository.id, file, line });
@@ -1218,21 +1967,18 @@ function openCurrentInNvim() {
   window.CodeReaderTerminal?.openFile(state.currentFile, editor.getCursor().line);
 }
 
-async function loadRepository(data, { preserveFile = false, stashNotice = true } = {}) {
-  const previousFile = preserveFile ? state.currentFile : null;
-  closeNvim();
-  closeCommitOverlay();
+function applyRepositoryPayload(data, { collapsed = null, branches = [], prepared = null } = {}) {
   state.repository = data.repository;
   state.files = data.files;
-  state.filesLower = data.files.map((filePath) => filePath.toLowerCase());
-  state.fileSet = new Set(data.files);
+  state.filesLower = prepared?.filesLower || data.files.map((filePath) => filePath.toLowerCase());
+  state.fileSet = prepared?.fileSet || new Set(data.files);
   state.status = data.status || {};
-  state.tree = buildTree(data.files);
-  const storedCollapsed = restoreCollapsed();
+  state.tree = prepared?.tree || buildTree(data.files);
+  const storedCollapsed = collapsed || restoreCollapsed();
   state.collapsed = storedCollapsed || new Set();
   if (!storedCollapsed) {
     const collectDirectories = (node) => {
-      for (const child of node.children.values()) {
+      for (const child of node.children) {
         if (!child.directory) continue;
         state.collapsed.add(child.path);
         collectDirectories(child);
@@ -1240,6 +1986,7 @@ async function loadRepository(data, { preserveFile = false, stashNotice = true }
     };
     collectDirectories(state.tree);
   }
+  state.branches = branches;
   state.currentFile = null;
   state.source = null;
   state.activeLine = null;
@@ -1260,11 +2007,32 @@ async function loadRepository(data, { preserveFile = false, stashNotice = true }
   renderExplanation();
   renderFaq();
   scheduleLspPolling();
+}
+
+async function loadRepository(data, { preserveFile = false, stashNotice = true } = {}) {
+  const previousFile = preserveFile ? state.currentFile : null;
+  // 打开/切换仓库前先保存当前仓库的阅读位置，供工作区页签切回。
+  captureSession();
+  closeNvim();
+  closeCommitOverlay();
+  const entryKey = data.workspace?.entryKey || state.sessionKey || repositoryKey(data.repository);
+  state.sessionKey = entryKey;
+  if (data.workspace) {
+    state.workspace = {
+      entries: data.workspace.entries || [],
+      activeKey: data.workspace.activeKey || entryKey,
+    };
+    renderWorkspaceTabs();
+  }
+  const prepared = preparePayload(data);
+  applyRepositoryPayload(data, { prepared });
   await loadBranches();
   if (previousFile && state.files.includes(previousFile)) {
     await selectFile(previousFile);
   }
   if (stashNotice) await refreshStashNotice();
+  // 建树/小写表只做一次：当前仓库的会话缓存直接复用，切走再切回无需重建。
+  storeSession(entryKey, data, prepared);
 }
 
 async function openRepository(event) {
@@ -1420,29 +2188,84 @@ async function fetchFunctionHistory(line) {
   }
 }
 
+let commitOverlayReturnFocus = null;
+let commitOverlayReturnHash = null;
+
+// 提交详情打开/关闭都会重渲染函数历史列表：原按钮节点可能已被替换，
+// 回收焦点时按提交哈希找到同一行（找不到再退回 body）。
+function restoreCommitFocus() {
+  const target = commitOverlayReturnFocus;
+  const hash = commitOverlayReturnHash;
+  commitOverlayReturnFocus = null;
+  commitOverlayReturnHash = null;
+  // 打开时下方分析栏可能被收起（inert）导致焦点先落到 body；body 不能作为
+  // 恢复目标，必须走哈希回退找回同一提交行。
+  if (target?.isConnected && target !== document.body) {
+    window.__crPanels?.show('insights');
+    target.focus({ preventScroll: true });
+    return;
+  }
+  if (!hash) return;
+  // 打开提交详情时分析栏被收起并设为 inert；恢复焦点前先展开，否则 inert
+  // 会阻止程序化聚焦（focus 静默失败）。
+  window.__crPanels?.show('insights');
+  const header = [...elements.historyContent.querySelectorAll('.commit-header')]
+    .find((node) => node.querySelector('.commit-hash')?.textContent === hash);
+  header?.focus({ preventScroll: true });
+}
+
 function closeCommitOverlay() {
   state.commitDetail = null;
   elements.commitOverlay.hidden = true;
   elements.commitOverlayBody.replaceChildren();
+  restoreCommitFocus();
 }
 
 function renderCommitOverlay() {
   const detail = state.commitDetail;
   if (!detail) {
+    const wasOpen = !elements.commitOverlay.hidden;
     elements.commitOverlay.hidden = true;
     elements.commitOverlayBody.replaceChildren();
+    if (wasOpen) restoreCommitFocus();
     return;
   }
+  const opening = elements.commitOverlay.hidden;
   elements.commitOverlay.hidden = false;
   const commit = (state.history?.commits || []).find((entry) => entry.hash === detail.hash);
   elements.commitOverlayTitle.textContent = detail.status === 'done'
     ? `${detail.data.short || detail.hash} · ${detail.data.message.split('\n')[0]}`
     : (commit ? `${commit.hash} · ${commit.subject}` : `提交 ${detail.hash}`);
   elements.commitOverlayBody.replaceChildren(renderCommitDetail(detail));
+  if (opening) {
+    commitOverlayReturnFocus = document.activeElement;
+    commitOverlayReturnHash = detail.hash;
+    // 覆盖层不是原生 dialog：打开时主动聚焦关闭按钮，Tab 在面板内循环。
+    setTimeout(() => elements.commitOverlayClose.focus({ preventScroll: true }), 0);
+  }
 }
+
+elements.commitOverlay.addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab') return;
+  // summary 是原生可聚焦元素（Enter/Space 展开 Diff）；漏掉它会把 Tab 困在
+  // 关闭按钮上，键盘用户无法打开 diff。
+  const focusable = [...elements.commitOverlay.querySelectorAll('button, a[href], summary, input, select, textarea, [tabindex="0"], [data-nav]')]
+    .filter((element) => element.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
 
 async function showCommit(hash) {
   if (!state.repository) return;
+  window.__crPanels?.hide('insights');
   if (state.commitCache.has(hash)) {
     state.commitDetail = { hash, status: 'done', data: state.commitCache.get(hash) };
     renderCommitOverlay();
@@ -1651,7 +2474,8 @@ function renderFaq() {
       toggle.setAttribute('aria-expanded', String(expanded));
       toggleIcon.textContent = expanded ? '▾' : '▸';
     });
-    body.append(overview, details, meta, actions);
+    body.append(overview, details);
+    body.append(meta, actions);
     card.append(toggle, body);
     elements.faqContent.append(card);
   }
@@ -1729,28 +2553,50 @@ function renderHistory() {
   elements.historyContent.append(actions);
 }
 
+// renderHistory 会重建整个列表：点「深层演变」后历史区立即切成加载态，
+// 原按钮节点被移除会把焦点丢到 body；加载完成再次渲染时同样要收回来。
+function focusHistoryPanel() {
+  const target = elements.historyContent.querySelector('.history-actions .button') || elements.historyContent;
+  // 加载态没有按钮可聚焦：让历史内容容器临时可聚焦，j/k 仍可滚动它。
+  if (target === elements.historyContent) target.tabIndex = -1;
+  target.focus({ preventScroll: true });
+}
+
 async function fetchFunctionHistoryDeep(line) {
   if (!state.repository || !state.currentFile || !Number.isInteger(line)) return;
   const filePath = state.currentFile;
   state.historyController?.abort();
   const controller = new AbortController();
   state.historyController = controller;
+  const keepFocus = elements.historyContent.contains(document.activeElement);
+  // 渲染后只在“焦点原本在历史区、且没有被用户移到别处”时补聚焦，
+  // 避免异步返回时把正在编辑的焦点抢回来。
+  const restoreFocus = () => {
+    if (!keepFocus) return;
+    const active = document.activeElement;
+    if (active !== document.body && !elements.historyContent.contains(active)) return;
+    focusHistoryPanel();
+  };
   state.history = { path: filePath, line, status: 'loading', deep: true, commits: [] };
   renderHistory();
+  restoreFocus();
   try {
-    const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/function-history?path=${encodeURIComponent(filePath)}&line=${line}&deep=1`, { signal: controller.signal });
+    const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/function-history?path=${encodeURIComponent(filePath)}&line=${encodeURIComponent(line)}&deep=1`, { signal: controller.signal });
     if (state.currentFile !== filePath || controller.signal.aborted) return;
     state.history = { path: filePath, line, status: 'done', ...data };
     renderHistory();
+    restoreFocus();
   } catch (error) {
     if (error.name === 'AbortError' || state.currentFile !== filePath) return;
     state.history = { path: filePath, line, status: 'error', message: error.message, commits: [] };
     renderHistory();
+    restoreFocus();
   }
 }
 
 function openQuestion() {
   if (!state.source || state.explaining) return;
+  window.__crPanels?.hideAll();
   const line = editor.getCursor().line;
   state.activeLine = line;
   state.questionOpen = true;
@@ -1769,6 +2615,7 @@ function closeQuestion() {
   elements.questionEditor.hidden = true;
   elements.questionError.textContent = '';
   elements.questionInput.value = '';
+  if (elements.questionAnimation) elements.questionAnimation.checked = false;
 }
 
 async function submitQuestion() {
@@ -1780,18 +2627,24 @@ async function submitQuestion() {
   }
   const filePath = state.currentFile;
   const line = state.activeLine;
+  const wantsAnimation = Boolean(elements.questionAnimation?.checked);
   state.explaining = true;
   elements.questionInput.disabled = true;
   elements.questionSubmit.disabled = true;
   elements.questionCancel.disabled = true;
-  elements.questionSubmit.textContent = '正在解释…';
+  elements.questionSubmit.textContent = wantsAnimation ? '正在生成文字与 3D 动画…' : '正在解释…';
   elements.questionError.textContent = '';
-  state.explanation = { status: 'loading', path: filePath, line };
+  state.explanation = { status: 'loading', path: filePath, line, animationRequested: wantsAnimation };
   renderExplanation();
+  // 回答返回时，如果用户这段时间没有主动把焦点移到别处，就打开解释窗口并
+  // 把焦点交给内容区——答案一到即可 j/k 阅读。用户切去别处则不抢焦点。
+  let focusMoved = false;
+  const markFocusMoved = () => { focusMoved = true; };
+  document.addEventListener('focusin', markFocusMoved, true);
   try {
     const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/explain`, {
       method: 'POST',
-      body: JSON.stringify({ path: filePath, line, question }),
+      body: JSON.stringify({ path: filePath, line, question, animate: wantsAnimation }),
     });
     state.explanation = { status: 'done', path: filePath, line, ...data };
     closeQuestion();
@@ -1800,12 +2653,17 @@ async function submitQuestion() {
     state.explanation = { status: 'error', path: filePath, line, message: error.message, details: error.details };
     elements.questionError.textContent = error.message;
   } finally {
+    document.removeEventListener('focusin', markFocusMoved, true);
     state.explaining = false;
     elements.questionInput.disabled = false;
     elements.questionSubmit.disabled = false;
     elements.questionCancel.disabled = false;
     elements.questionSubmit.textContent = '确定';
     renderExplanation();
+    if (!focusMoved && state.explanation && state.explanation.status !== 'loading') {
+      window.__crPanels?.pin('insights');
+      setTimeout(focusExplanationPanel, 0);
+    }
   }
 }
 
@@ -1885,6 +2743,7 @@ function renderSources(card, sources) {
       link.href = hit.url;
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
+      link.dataset.nav = 'source';
       link.textContent = hit.title || hit.url;
       const engine = hit.engine === 'google' ? 'Google' : hit.engine === 'bing' ? 'Bing' : '网络';
       item.append(document.createTextNode(`网络（未核验 · ${engine}）：`), link);
@@ -1917,7 +2776,9 @@ function renderExplanation() {
   elements.explanationAnchor.textContent = `${explanation.path}:${explanation.line}`;
   if (explanation.status === 'loading') {
     elements.explanationContent.className = 'insight-content empty-insight loading';
-    elements.explanationContent.textContent = 'LLM 正在结合源码分析问题…';
+    elements.explanationContent.textContent = explanation.animationRequested
+      ? 'LLM 正在结合源码与规范生成文字解释和 3D 动画…'
+      : 'LLM 正在结合源码分析问题…';
     return;
   }
   if (explanation.status === 'error') {
@@ -2035,7 +2896,7 @@ function renderExplanation() {
     open.type = 'button';
     open.className = 'button primary animation-open';
     open.textContent = '查看 3D 动画演示';
-    open.addEventListener('click', () => openAnimation(explanation.explanation.animation));
+    open.addEventListener('click', () => openAnimation(explanation.explanation.animation, open));
     card.append(open);
   }
   renderSources(card, explanation.sources);
@@ -2116,6 +2977,8 @@ function closeAnimationUrls() {
   animationUrls = null;
 }
 
+let animationReturnFocus = null;
+
 function closeAnimation() {
   if (!state.animationOpen && !animationUrls) return;
   state.animationOpen = false;
@@ -2123,14 +2986,19 @@ function closeAnimation() {
   elements.animationFrame.src = 'about:blank';
   elements.animationDownload.removeAttribute('href');
   closeAnimationUrls();
+  const target = animationReturnFocus;
+  animationReturnFocus = null;
+  if (target?.isConnected) target.focus({ preventScroll: true });
 }
 
-async function openAnimation(animation) {
+async function openAnimation(animation, trigger = null) {
   if (!animation) return;
+  if (!state.animationOpen) animationReturnFocus = trigger || document.activeElement;
   state.animationOpen = true;
   elements.animationOverlay.hidden = false;
   elements.animationFrame.src = 'about:blank';
   elements.animationDownload.removeAttribute('href');
+  elements.animationClose.focus({ preventScroll: true });
   try {
     if (!state.animationRuntime) {
       const response = await fetch('/vendor/three/animation.bundle.js');
@@ -2152,6 +3020,103 @@ async function openAnimation(animation) {
     closeAnimation();
     showNotice(`动画加载失败：${error.message}`, { error: true });
   }
+}
+
+// 解释窗口获得焦点后由通用 Vim 导航层（vim-nav.js）接管 j/k/gg/G：
+// 焦点在内容容器上=阅读模式（逐行滚动），Tab/点击进入链接后=列表模式（项间移动）。
+function focusExplanationPanel() {
+  // 延迟聚焦可能晚于“打开 3D 动画/提交详情/对话框”：顶层弹层在场时不要抢焦点。
+  if (state.animationOpen || !elements.animationOverlay.hidden) return;
+  if (!elements.commitOverlay.hidden || document.querySelector('dialog[open]')) return;
+  // 面板已被收起时不要再聚焦（聚焦会触发 focusin 把面板重新滑出来）。
+  if (!document.getElementById('app').classList.contains('insights-visible')) return;
+  elements.explanationContent.focus({ preventScroll: true });
+}
+
+// 两侧栏共用入口：键盘 Ctrl+Alt+B/I 与代码窗口上方的箭头按钮走同一条路径。
+// 语义是「去这个窗口」而不是盲目开关：面板已打开但焦点不在里面时，把焦点送进去；
+// 只有焦点已经在面板内时，再按一次才收起（否则用户在看代码时按 Ctrl+Alt+I
+// 会把刚开着的解释窗口关掉，永远进不去）。
+function toggleCodeTreePanel() {
+  const app = document.getElementById('app');
+  const visible = app.classList.contains('sidebar-visible');
+  const focusInside = Boolean(document.activeElement?.closest?.('.sidebar'));
+  if (visible && focusInside) {
+    // 收起后焦点回代码窗；侧栏里的节点随即隐藏，不能再把焦点留在提示按钮上。
+    treeFocusRequest += 1;
+    window.__crPanels?.toggle('sidebar');
+    if (editor) editor.focus();
+    else elements.navTree?.focus({ preventScroll: true });
+    return;
+  }
+  window.__crPanels?.pin('sidebar');
+  requestTreeFocus();
+}
+
+// 页面刷新后文件树数据仍在异步恢复：第一次 Ctrl+Alt+B 时 focusTree() 可能
+// 因为还没有行而失败（面板已滑出、焦点却留在编辑器）。这里在短时间内重试，
+// 等树渲染出来后补聚焦；用户中途把焦点移到别处则放弃，避免抢焦点。
+let treeFocusRequest = 0;
+
+// 键盘导航跳到代码行时，焦点由编辑器接管：作废仍在跑的文件树补焦点重试，
+// 否则它的观察窗会把焦点从编辑器抢回文件树（K 跳行后 j/k 仍作用在树上）。
+function cancelTreeFocusRequest() {
+  treeFocusRequest += 1;
+}
+
+function requestTreeFocus() {
+  const app = document.getElementById('app');
+  const token = ++treeFocusRequest;
+  const origin = document.activeElement;
+  const deadline = Date.now() + 4000;
+  let focusedAt = 0;
+  const treeHasFocus = () => {
+    const active = document.activeElement;
+    return Boolean(active && (active === elements.fileTree || elements.fileTree.contains(active)));
+  };
+  const attempt = () => {
+    if (token !== treeFocusRequest) return;
+    const active = document.activeElement;
+    if (treeHasFocus()) {
+      if (!focusedAt) focusedAt = Date.now();
+      // 聚焦成功后留一个短暂观察窗：重载恢复流程可能在随后一帧把焦点设回
+      // 编辑器，树重渲染也可能把焦点冲掉；这里以 activeElement 实况为准继续补。
+      if (Date.now() - focusedAt < 700 && Date.now() < deadline) setTimeout(attempt, 120);
+      return;
+    }
+    focusedAt = 0;
+    // 顶层弹层在场时不要把焦点拽到背后的文件树（Ctrl+Alt+B 在对话框里也能按到）。
+    if (document.querySelector('dialog[open]') || !elements.commitOverlay.hidden || !elements.animationOverlay.hidden) return;
+    // 用户把焦点移到别处则放弃。重载恢复流程会把焦点设回编辑器（origin 可能
+    // 还是 body），这属于恢复时序而不是用户操作，继续重试。
+    if (active?.closest?.('.sidebar')) return;
+    if (active !== origin && active !== document.body && active !== document.documentElement && !active?.closest?.('#editor-host')) return;
+    // 重载恢复期面板 class 可能晚一帧才置位：未可见时也继续按 120ms 重试。
+    if (!app.classList.contains('sidebar-visible')) {
+      if (Date.now() < deadline) setTimeout(attempt, 120);
+      return;
+    }
+    focusTree();
+    // focusTree() 返回 true 不代表焦点真的留下（树重渲染/恢复流程都可能冲掉），
+    // 下一次 attempt 以 activeElement 实况复核，不在树内就继续重试。
+    if (Date.now() < deadline) setTimeout(attempt, 120);
+  };
+  attempt();
+}
+
+function toggleInsightsPanel() {
+  const app = document.getElementById('app');
+  const visible = app.classList.contains('insights-visible');
+  const focusInside = Boolean(document.activeElement?.closest?.('.insights'));
+  if (visible && focusInside) {
+    // 焦点已在解释窗口里：再按一次收起，焦点回代码窗。
+    window.__crPanels.toggle('insights');
+    editor?.focus();
+    return;
+  }
+  // 隐藏时打开；悬停/已打开时钉住；随后聚焦解释窗口以便 j/k 导航。
+  window.__crPanels?.pin('insights');
+  setTimeout(focusExplanationPanel, visible ? 0 : 200);
 }
 
 async function jumpTo(location, pushCurrent = true) {
@@ -2193,6 +3158,8 @@ async function gotoDefinition() {
       await jumpTo(data.locations[0]);
       return;
     }
+    // 引用/定义列表覆盖代码区，收起两侧悬停面板避免遮住列表。
+    window.__crPanels?.hideAll();
     editor.showQuickpick(data.locations, (picked) => {
       jumpTo(picked);
     });
@@ -2236,6 +3203,7 @@ async function gotoReferences() {
       await jumpTo(data.locations[0]);
       return;
     }
+    window.__crPanels?.hideAll();
     editor.showQuickpick(data.locations, (picked) => {
       jumpTo(picked);
     }, {
@@ -2333,6 +3301,8 @@ function focusTree() {
   if (!state.repository) return false;
   const rows = treeRows();
   if (!rows.length) return false;
+  // 文件树默认收起为覆盖层：键盘聚焦时先滑出，避免焦点落在屏幕外。
+  window.__crPanels?.show('sidebar');
   treeFocusIndex = rows.findIndex((row) => row.dataset.path === state.currentFile);
   if (treeFocusIndex < 0) treeFocusIndex = 0;
   updateTreeFocus();
@@ -2413,6 +3383,7 @@ window.__ts = {
       explanation: state.explanation,
       questionOpen: state.questionOpen,
       explaining: state.explaining,
+      keyboardNav: globalThis.__crKeyboardNavState || null,
       lsp: state.lsp,
       theme: state.theme,
       editorProfile: state.editorProfile
@@ -2426,8 +3397,23 @@ window.__ts = {
         : null,
       editor: editor?.snapshot() || null,
       jumpStackDepth: jumpStack.length,
-      readingTrail: state.readingTrail,
+readingTrail: state.readingTrail,
       animationOpen: state.animationOpen,
+      workspace: {
+        entries: state.workspace.entries.map((entry) => ({ key: entry.key, name: entry.name, path: entry.path })),
+        activeKey: state.sessionKey,
+      },
+    };
+  },
+  async switchRepository(name) {
+    const entry = state.workspace.entries.find((candidate) => candidate.name === name || candidate.key === name);
+    if (!entry) throw new Error(`工作区没有仓库：${name}`);
+    await activateWorkspaceEntry(entry);
+    return {
+      repository: state.repository?.name || null,
+      currentFile: state.currentFile,
+      activeLine: state.activeLine,
+      cursor: editor.getCursor(),
     };
   },
   // 自动化/调试入口：直接打开文件位置与触发引用查询。
@@ -2450,8 +3436,81 @@ window.__ts = {
   gotoReferences() {
     return gotoReferences();
   },
+  // 自动化入口：构造一个带预览的引用列表，验证 j/k 切换预览不闪烁。
+  showTestQuickpick() {
+    const items = [1, 2, 3, 4].map((index) => ({ path: `test/ref${index}.c`, line: index, character: 0 }));
+    const delays = [40, 2000, 40, 2000];
+    editor.showQuickpick(items, () => {}, {
+      title: 'preview-flicker-test',
+      preview: (item) => new Promise((resolve) => {
+        setTimeout(() => resolve({
+          path: item.path,
+          line: item.line,
+          lineStart: item.line,
+          lineEnd: item.line,
+          caller: null,
+          lines: [{ number: item.line, text: `preview ${item.line}` }],
+        }), delays[item.line - 1]);
+      }),
+    });
+    return true;
+  },
+  // 自动化入口：渲染一条带证据链/下一跳/新版 3D 动画的解释，验证新 UI。
+  showTestUnderstanding() {
+    const file = state.currentFile || 'test.c';
+    const line = state.activeLine || 1;
+    state.explanation = {
+      status: 'done',
+      path: file,
+      line,
+      model: 'test-model',
+      explanation: {
+        overview: '测试概述：证据链、建议继续阅读与内嵌 3D 动画。',
+        details: ['测试细节一', '测试细节二'],
+        summary: '测试总结',
+        evidence: [
+          { claim: '当前函数处理事件', kind: 'code', file, lineStart: line, lineEnd: line },
+          { claim: '规范要求先初始化再写寄存器', kind: 'documentation', source: 'spec.md', section: '3.2', page: 7, excerpt: '初始化后再写寄存器。' },
+          { claim: '这里可能是性能取舍', kind: 'inference' },
+        ],
+        nextSteps: [{ file, line: Math.max(1, line + 1), reason: '继续阅读下一行' }],
+        specifications: [],
+        animation: {
+          title: '测试执行动画',
+          summary: '两步演示',
+          nodes: [{ id: 'a', label: '入口', kind: 'code' }, { id: 'b', label: '输出', kind: 'output' }],
+          steps: [
+            { title: '第一步', detail: '进入函数', node: 'a', file, lineStart: line, lineEnd: line, spec: '' },
+            { title: '第二步', detail: '产生输出', node: 'b', from: 'a', to: 'b', file, lineStart: line, lineEnd: line, spec: '' },
+          ],
+        },
+      },
+      sources: {
+        local: [],
+        web: [
+          { title: '示例来源一', url: 'https://example.com/spec1', engine: 'google' },
+          { title: '示例来源二', url: 'https://example.com/spec2', engine: 'google' },
+        ],
+        searchedFiles: 0,
+      },
+    };
+    renderExplanation();
+    window.__crPanels?.pin('insights');
+    setTimeout(focusExplanationPanel, 200);
+    return true;
+  },
+  // 自动化入口：按窗口返回文件列表，避免把 10 万路径塞进 snapshot。
+  fileList(offset = 0, limit = 50) {
+    const start = Math.max(0, Number(offset) || 0);
+    const count = Math.max(0, Math.min(Number(limit) || 0, 2000));
+    return state.files.slice(start, start + count);
+  },
   getValue() {
     return editor.getValue();
+  },
+  // 自动化/调试入口：当前视口内的两字符匹配（sneak 使用同一数据源）。
+  visibleMatches(query, limit = 80) {
+    return editor.visibleMatches(query, limit);
   },
   closeQuickpick() {
     editor.closeQuickpick();
@@ -2459,6 +3518,7 @@ window.__ts = {
 };
 
 elements.openMenu.addEventListener('click', showOpenDialog);
+elements.workspaceAdd.addEventListener('click', showOpenDialog);
 elements.tabEditor.addEventListener('click', () => setEditorMode('editor'));
 elements.tabNvim.addEventListener('click', () => setEditorMode('nvim'));
 elements.nvimClose.addEventListener('click', closeNvim);
@@ -2476,6 +3536,26 @@ elements.commitOverlay.addEventListener('click', (event) => {
 elements.animationClose.addEventListener('click', closeAnimation);
 elements.animationOverlay.addEventListener('click', (event) => {
   if (event.target === elements.animationOverlay) closeAnimation();
+});
+// 动画弹层不是原生 dialog：Tab 在弹层内循环，避免焦点跑到背后的编辑器。
+window.addEventListener('message', (event) => {
+  if (event.source !== elements.animationFrame?.contentWindow) return;
+  if (event.data?.type === 'code-reader-animation-close') closeAnimation();
+});
+elements.animationOverlay.addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab') return;
+  const focusable = [...elements.animationOverlay.querySelectorAll('a[href], button, iframe, [tabindex="0"]')]
+    .filter((element) => element.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 elements.editorEnvSettings.addEventListener('click', async () => {
   elements.editorEnvDialog.showModal();
@@ -2528,7 +3608,37 @@ elements.historyMenuButton.addEventListener('click', async (event) => {
   event.stopPropagation();
   const willOpen = elements.historyMenu.hidden;
   elements.historyMenu.hidden = !willOpen;
-  if (willOpen) await loadReadingHistory();
+  elements.historyMenuButton.setAttribute('aria-expanded', String(willOpen));
+  if (willOpen) {
+    await loadReadingHistory();
+    focusFirstMenuItem(elements.historyMenu);
+  } else {
+    elements.historyMenuButton.focus();
+  }
+});
+elements.historyMenuButton.addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowDown') return;
+  event.preventDefault();
+  elements.historyMenuButton.click();
+});
+elements.historyMenu.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    elements.historyMenu.hidden = true;
+    elements.historyMenuButton.setAttribute('aria-expanded', 'false');
+    elements.historyMenuButton.focus();
+    return;
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  const buttons = menuButtons(elements.historyMenu);
+  if (!buttons.length) return;
+  event.preventDefault();
+  const current = buttons.indexOf(document.activeElement);
+  let next;
+  if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = buttons.length - 1;
+  else next = (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[next].focus();
 });
 elements.docsSettings.addEventListener('click', openDocsDialog);
 elements.docsClose.addEventListener('click', () => elements.docsDialog.close());
@@ -2591,6 +3701,27 @@ elements.dirPick.addEventListener('click', () => {
     elements.dirBrowser.hidden = true;
   }
 });
+elements.dirList.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
+  if (!state.dirEntries.length) return;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    const base = state.dirSelected < 0 ? (delta > 0 ? -1 : 0) : state.dirSelected;
+    selectDirIndex((base + delta + state.dirEntries.length) % state.dirEntries.length);
+    return;
+  }
+  if (event.key === 'Enter') {
+    if (state.dirSelected < 0) return;
+    event.preventDefault();
+    enterDirIndex(state.dirSelected);
+    return;
+  }
+  if (event.key.length === 1 && event.key.trim()) {
+    event.preventDefault();
+    typeAheadDir(event.key);
+  }
+});
 elements.themeSelect.addEventListener('change', () => {
   const id = elements.themeSelect.value;
   const palette = editor.setTheme(id);
@@ -2621,12 +3752,25 @@ elements.repoNoticeAction.addEventListener('click', () => {
   if (action) action();
 });
 elements.repoNoticeClose.addEventListener('click', hideNotice);
+elements.navTree.addEventListener('click', () => toggleCodeTreePanel());
+elements.navInsights.addEventListener('click', () => toggleInsightsPanel());
 elements.vimHelpClose.addEventListener('click', () => elements.vimHelpDialog.close());
+// :help 从 Vim ex 命令行打开，原生关闭时要恢复的输入框已被移除，焦点会落到
+// body；帮助窗口的入口就是编辑器，关闭后统一把焦点送回编辑器。
+elements.vimHelpDialog.addEventListener('close', () => {
+  editor?.focus();
+  // 原生 dialog 在 close 之后还会做一次焦点恢复，可能把焦点又放回已关闭的
+  // 对话框按钮；下一个宏任务再补一次，确保焦点落在编辑器。
+  setTimeout(() => editor?.focus(), 0);
+});
 elements.vimHelpDialog.addEventListener('click', (event) => {
   if (event.target === elements.vimHelpDialog) elements.vimHelpDialog.close();
 });
 elements.docsDialog.addEventListener('click', (event) => {
   if (event.target === elements.docsDialog) elements.docsDialog.close();
+});
+elements.questionInput.addEventListener('input', () => {
+  if (ANIMATION_HINT_RE.test(elements.questionInput.value)) elements.questionAnimation.checked = true;
 });
 elements.questionInput.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter') return;
@@ -2635,58 +3779,220 @@ elements.questionInput.addEventListener('keydown', (event) => {
   event.preventDefault();
   submitQuestion();
 });
-let treeFilterTimer = null;
-elements.treeFilter.addEventListener('input', () => {
-  clearTimeout(treeFilterTimer);
-  treeFilterTimer = setTimeout(renderTree, 120);
+// 解释窗口：点击空白处先让内容容器获得焦点（阅读模式）；Esc 先退回容器，
+// 再按一次回编辑器。j/k/gg/G 由通用 Vim 导航层处理。
+elements.explanationContent.addEventListener('click', (event) => {
+  if (event.target.closest('[data-nav], a, button, summary')) return;
+  elements.explanationContent.focus();
 });
-elements.fileTree.addEventListener('keydown', (event) => {
-  const rows = treeRows();
-  if (!rows.length) return;
-  if (event.key === 'j' || event.key === 'ArrowDown') {
-    treeFocusIndex = Math.min(rows.length - 1, treeFocusIndex + 1);
-  } else if (event.key === 'k' || event.key === 'ArrowUp') {
-    treeFocusIndex = Math.max(0, treeFocusIndex - 1);
-  } else if (event.key === 'Enter' || event.key === 'o') {
+elements.explanationContent.addEventListener('keydown', (event) => {
+  if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  if (document.activeElement !== elements.explanationContent) {
+    elements.explanationContent.focus({ preventScroll: true });
+    return;
+  }
+  editor?.focus();
+});
+let treeFilterTimer = null;
+let treeFilterPending = false;
+function flushTreeFilter() {
+  if (!treeFilterPending) return;
+  clearTimeout(treeFilterTimer);
+  treeFilterTimer = null;
+  treeFilterPending = false;
+  renderTree();
+}
+elements.treeFilter.addEventListener('input', () => {
+  // 输入变化后旧的候选下标失效；单候选会在渲染时自动高亮。
+  state.filterIndex = -1;
+  treeFilterPending = true;
+  clearTimeout(treeFilterTimer);
+  treeFilterTimer = setTimeout(() => {
+    treeFilterTimer = null;
+    treeFilterPending = false;
+    renderTree();
+  }, 120);
+});
+// 过滤框内直接键盘导航：↑/↓ 选择候选，Enter 打开。多候选需先选中，
+// 只有一个候选时 Enter 直接打开（与用户操作习惯一致）。
+elements.treeFilter.addEventListener('keydown', (event) => {
+  if (event.isComposing || event.keyCode === 229) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  // Esc 退出过滤：清空过滤条件并回到文件树（否则焦点会留在输入框里）。
+  if (event.key === 'Escape') {
     event.preventDefault();
     event.stopPropagation();
-    activateTreeRow(rows[treeFocusIndex]);
+    clearTimeout(treeFilterTimer);
+    treeFilterTimer = null;
+    treeFilterPending = false;
+    elements.treeFilter.value = '';
+    state.filterIndex = -1;
+    renderTree();
+    if (!focusTree()) elements.fileTree.focus({ preventScroll: true });
     return;
-  } else if (event.key === 'q' || event.key === 'Escape') {
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Enter') return;
+  if (!elements.treeFilter.value.trim()) return;
+  flushTreeFilter();
+  const matches = state.filterMatches;
+  if (!matches.length) return;
+  if (event.key === 'Enter') {
+    const target = state.filterIndex >= 0
+      ? matches[state.filterIndex]
+      : (state.filterTotal === 1 ? matches[0] : null);
+    if (!target) return;
+    event.preventDefault();
+    openFilteredFile(target);
+    return;
+  }
+  event.preventDefault();
+  const delta = event.key === 'ArrowDown' ? 1 : -1;
+  if (state.filterIndex < 0) state.filterIndex = delta > 0 ? 0 : matches.length - 1;
+  else state.filterIndex = (state.filterIndex + delta + matches.length) % matches.length;
+  updateFilterFocus();
+});
+elements.fileTree.addEventListener('keydown', (event) => {
+  if (event.isComposing || event.keyCode === 229) return;
+  const rows = treeRows();
+  if (!rows.length) return;
+  if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+    const row = rows[Math.max(0, Math.min(treeFocusIndex, rows.length - 1))];
+    if (!row) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = row.getBoundingClientRect();
+    showTreeMenu(
+      { path: row.dataset.path, directory: row.dataset.directory === 'true' },
+      rect.left + 6,
+      rect.bottom,
+    );
+    return;
+  }
+  if (event.altKey || event.metaKey) return;
+  const key = event.key;
+  const ctrl = event.ctrlKey;
+  // 数字计数（5j / 3G / 12gg），0 单独出现表示首项。
+  if (!ctrl && /^[0-9]$/.test(key) && !(key === '0' && !treeCount)) {
+    treeCount = `${treeCount}${key}`.slice(-6);
+    event.preventDefault();
+    return;
+  }
+  const count = treeCount ? Number(treeCount) : 0;
+  const pageItems = Math.max(1, Math.floor(elements.fileTree.clientHeight / 27));
+  const clampIndex = (value) => Math.max(0, Math.min(rows.length - 1, value));
+  const finish = () => {
+    treeCount = '';
+    treeGPressedAt = 0;
+    event.preventDefault();
+    event.stopPropagation();
+    updateTreeFocus();
+  };
+  if (key === 'j' || key === 'ArrowDown') {
+    treeFocusIndex = clampIndex(treeFocusIndex + (count || 1));
+  } else if (key === 'k' || key === 'ArrowUp') {
+    treeFocusIndex = clampIndex(treeFocusIndex - (count || 1));
+  } else if (ctrl && (key === 'd' || key === 'u' || key === 'f' || key === 'b')) {
+    // 半屏/整屏：Ctrl+d/u/f/b（文件树行高固定，按可视行数翻）。
+    const half = Math.max(1, Math.round(pageItems / 2));
+    const step = key === 'd' || key === 'u' ? half : pageItems;
+    const direction = key === 'd' || key === 'f' ? 1 : -1;
+    treeFocusIndex = clampIndex(treeFocusIndex + direction * step * (count || 1));
+  } else if (key === 'PageDown' || key === 'PageUp') {
+    treeFocusIndex = clampIndex(treeFocusIndex + (key === 'PageDown' ? 1 : -1) * pageItems);
+  } else if (key === 'H' || key === 'M' || key === 'L') {
+    treeFocusIndex = key === 'H' ? 0 : key === 'M' ? Math.floor((rows.length - 1) / 2) : rows.length - 1;
+  } else if (key === '0' || key === '^') {
+    treeFocusIndex = 0;
+  } else if (key === '$') {
+    treeFocusIndex = rows.length - 1;
+  } else if (key === 'G') {
+    treeFocusIndex = count ? clampIndex(count - 1) : rows.length - 1;
+  } else if (key === 'g') {
+    // Vim 风格 gg：700ms 内连按两次跳到第一个文件；带计数（12gg）跳到第 12 个。
+    const now = Date.now();
+    if (now - treeGPressedAt <= 700) {
+      treeFocusIndex = count ? clampIndex(count - 1) : 0;
+    } else {
+      treeGPressedAt = now;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+  } else if (key === 'Enter' || key === 'o') {
+    const targetIndex = treeFocusIndex;
+    treeCount = '';
+    treeGPressedAt = 0;
+    event.preventDefault();
+    event.stopPropagation();
+    activateTreeRow(rows[clampIndex(targetIndex)]);
+    return;
+  } else if (key === 'q' || key === 'Escape') {
+    treeCount = '';
+    treeGPressedAt = 0;
     event.preventDefault();
     event.stopPropagation();
     editor.focus();
     return;
+  } else if (key === '/') {
+    // / 直接跳到过滤框：文件太多时先过滤再 j/k 选择。
+    treeCount = '';
+    treeGPressedAt = 0;
+    event.preventDefault();
+    event.stopPropagation();
+    elements.treeFilter.focus();
+    elements.treeFilter.select();
+    return;
   } else {
+    treeCount = '';
+    treeGPressedAt = 0;
     return;
   }
-  event.preventDefault();
-  event.stopPropagation();
-  updateTreeFocus();
+  finish();
 });
-elements.fileTree.addEventListener('click', (event) => {
+elements.fileTree.addEventListener('click', async (event) => {
   const row = event.target.closest('.tree-row');
   if (!row) return;
-  if (row.dataset.directory === 'true') {
-    const path = row.dataset.path;
-    if (state.collapsed.has(path)) state.collapsed.delete(path);
-    else state.collapsed.add(path);
-    persistCollapsed();
-    renderTree();
-  } else {
-    jumpStack.length = 0;
-    jumpForwardStack.length = 0;
-    selectFile(row.dataset.path);
-  }
+  // 目录展开会重建整棵树：与键盘激活共用一条路径，焦点留在同路径的新行上。
+  await activateTreeRow(row);
 });
+function showTreeMenu(context, left, top) {
+  if (!context) return;
+  state.treeContext = context;
+  elements.treeMenu.hidden = false;
+  elements.treeMenu.style.left = `${left}px`;
+  elements.treeMenu.style.top = `${top}px`;
+  focusFirstMenuItem(elements.treeMenu);
+}
+
 elements.fileTree.addEventListener('contextmenu', (event) => {
   const row = event.target.closest('.tree-row');
   if (!row || !state.repository) return;
   event.preventDefault();
-  state.treeContext = { path: row.dataset.path, directory: row.dataset.directory === 'true' };
-  elements.treeMenu.hidden = false;
-  elements.treeMenu.style.left = `${event.clientX}px`;
-  elements.treeMenu.style.top = `${event.clientY}px`;
+  showTreeMenu(
+    { path: row.dataset.path, directory: row.dataset.directory === 'true' },
+    event.clientX,
+    event.clientY,
+  );
+});
+elements.treeMenu.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    elements.treeMenu.hidden = true;
+    elements.fileTree.focus();
+    return;
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  const buttons = menuButtons(elements.treeMenu);
+  if (!buttons.length) return;
+  event.preventDefault();
+  const current = buttons.indexOf(document.activeElement);
+  let next;
+  if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = buttons.length - 1;
+  else next = (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[next].focus();
 });
 elements.treeMenu.addEventListener('click', async (event) => {
   const button = event.target.closest('button');
@@ -2708,12 +4014,15 @@ elements.treeMenu.addEventListener('click', async (event) => {
       showNotice(`刷新失败：${error.message}`, { error: true });
     }
   }
+  // 键盘激活菜单项（Enter/Space 产生 detail=0 的 click）后把焦点还给文件树。
+  if (event.detail === 0) elements.fileTree.focus();
 });
 document.addEventListener('click', (event) => {
   if (!elements.historyMenu.hidden
     && !elements.historyMenu.contains(event.target)
     && event.target !== elements.historyMenuButton) {
     elements.historyMenu.hidden = true;
+    elements.historyMenuButton.setAttribute('aria-expanded', 'false');
   }
   if (!elements.treeMenu.hidden && !elements.treeMenu.contains(event.target)) {
     elements.treeMenu.hidden = true;
@@ -2722,21 +4031,90 @@ document.addEventListener('click', (event) => {
 elements.questionCancel.addEventListener('click', closeQuestion);
 elements.questionSubmit.addEventListener('click', submitQuestion);
 elements.openDialog.addEventListener('cancel', (event) => {
-  if (state.opening) event.preventDefault();
+  if (state.opening) {
+    event.preventDefault();
+    return;
+  }
+  // 目录浏览器是对话框内的子面板：Esc 先只关闭它，不关闭整个打开仓库对话框。
+  if (!elements.dirBrowser.hidden) {
+    event.preventDefault();
+    elements.dirBrowser.hidden = true;
+    elements.browseButton.focus({ preventScroll: true });
+  }
 });
 
-// 捕获阶段先处理引用列表按键：否则 CodeMirror/Vim 会先消费 Enter（把当前行换行），
-// 弹窗的“Enter 跳转”永远见不到事件。
+// 全键盘导航层：easymotion 风格标签跳转（含代码行）+ sneak 风格两字符定位。
+// Ctrl+Alt+L 被 UKUI 锁屏（screensaver:<Ctrl><Alt>l）在 X 层抓走，网页收不到，
+// 两字符定位改用 Ctrl+Alt+F（F=find）。
+const keyboardNav = createKeyboardNav({
+  getEditor: () => editor,
+  toggleSidebar: toggleCodeTreePanel,
+  toggleInsights: toggleInsightsPanel,
+  cancelTreeFocus: cancelTreeFocusRequest,
+});
+
+// 任意窗口的 Vim 键导航（解释栏/提交详情/对话框/菜单）：j/k 移动或滚动，gg/G 首尾。
+// 放在冒泡阶段，让文件树、目录浏览器、CodeMirror 等既有按键处理先执行。
+const vimNav = createVimNav();
 document.addEventListener('keydown', (event) => {
+  vimNav.handleKeydown(event);
+});
+
+// 捕获阶段先处理导航层与引用列表按键：否则 CodeMirror/Vim 会先消费 Enter
+// （把当前行换行），弹窗的“Enter 跳转”永远见不到事件。
+document.addEventListener('keydown', (event) => {
+  if (keyboardNav.handleKeydown(event)) return;
   editor.quickpickKeydown(event);
 }, true);
 
-// 编辑器 ⇄ nvim 页签切换：Ctrl+Alt+E / Ctrl+Alt+N。
+// 编辑器 ⇄ nvim 页签切换：Ctrl+Alt+1 / Ctrl+Alt+2（主键位）。
+// 旧键 Ctrl+Alt+E / Ctrl+Alt+N 保留兼容，但 Ctrl+Alt+E 常被桌面环境注册成全局
+// 快捷键（如 UKUI 的 peony-qt2 = 文件管理器），在 X 层就被抓走、网页收不到，
+// 不能当默认键位用。
+// 工作区切仓：Ctrl+Alt+[ / ] 前后切换，Ctrl+Alt+Shift+1..9 直达第 N 个页签。
+// 两侧栏入口：Ctrl+Alt+B（代码树）/ Ctrl+Alt+I（分析与解释）——「去这个窗口」：
+// 打开并把焦点送进去；焦点已在窗口内时再按才收起（见 toggle*Panel）。
 // 捕获阶段消费事件：否则 CodeMirror / xterm 会先把组合键当成输入（nvim 终端会把它发给 PTY）。
 // 用 event.code 判键：部分布局（AltGr）下 event.key 会变成别的字符。
 document.addEventListener('keydown', (event) => {
   if (!event.ctrlKey || !event.altKey || event.metaKey || event.repeat || event.isComposing) return;
-  const mode = event.code === 'KeyE' ? 'editor' : event.code === 'KeyN' ? 'nvim' : null;
+  if (event.shiftKey) {
+    const digit = /^Digit([1-9])$/.exec(event.code);
+    if (digit) {
+      event.preventDefault();
+      event.stopPropagation();
+      activateWorkspaceByIndex(Number(digit[1]) - 1);
+      return;
+    }
+    // Shift+B/I/K/F 作为备用键：Ctrl+Alt+B/I 被输入法/桌面占用时仍可使用。
+  }
+  if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
+    event.preventDefault();
+    event.stopPropagation();
+    activateWorkspaceByOffset(event.code === 'BracketLeft' ? -1 : 1);
+    return;
+  }
+  if (event.code === 'KeyB') {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleCodeTreePanel();
+    return;
+  }
+  if (event.code === 'KeyI') {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleInsightsPanel();
+    return;
+  }
+  if (event.code === 'KeyK' || event.code === 'KeyF') {
+    event.preventDefault();
+    event.stopPropagation();
+    keyboardNav.toggle(event.code === 'KeyK' ? 'hint' : 'sneak');
+    return;
+  }
+  const mode = event.code === 'Digit1' || event.code === 'KeyE' ? 'editor'
+    : event.code === 'Digit2' || event.code === 'KeyN' ? 'nvim'
+    : null;
   if (!mode) return;
   event.preventDefault();
   event.stopPropagation();
@@ -2759,6 +4137,22 @@ document.addEventListener('keydown', (event) => {
     closeQuestion();
     editor.focus();
     return;
+  }
+  // 解释栏项列表：焦点在提交行/「深层演变」等控件上时，Esc 先退回阅读容器
+  // #explanation-content，再按一次才回编辑器。搜索条打开时先清搜索（优先级
+  // 与搜索框自身一致：Esc 只退一层）。
+  if (event.key === 'Escape') {
+    const active = document.activeElement;
+    const insights = elements.insights;
+    if (insights && active instanceof Element && insights.contains(active) && !active.closest('#explanation-content')) {
+      event.preventDefault();
+      if (document.querySelector('.vim-search')) {
+        vimNav.closeSearch();
+        return;
+      }
+      elements.explanationContent.focus({ preventScroll: true });
+      return;
+    }
   }
   const target = event.target;
   const editing = target instanceof HTMLElement && (target.matches('input, textarea, select') || target.isContentEditable);
@@ -2791,9 +4185,12 @@ loadLayout();
 applyLayout();
 initSplitter('left');
 initSplitter('right');
+initAutoPanels();
 populateThemes();
 applyShellTheme(editor.setTheme(state.theme));
 loadReadingHistory();
+// 刷新页面后默认回到上一次的仓库、文件与行列位置。
+restoreWorkspace().catch((error) => console.error('[workspace] 恢复失败：', error));
 loadEditorEnv()
   .then(() => loadEditorProfile())
   .catch((error) => {

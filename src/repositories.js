@@ -6,6 +6,7 @@ import path from 'node:path';
 import { AppError } from './errors.js';
 import { cloneRepository, listSourceFiles, repositoryMeta, repositoryRoot, repositoryStatus, runGit } from './git.js';
 import { getResume, touchRepository } from './history.js';
+import { activateRepository } from './workspace.js';
 import { dataPath } from './paths.js';
 
 const repositories = new Map();
@@ -34,27 +35,65 @@ function remoteDirectoryName(url) {
   return `${name}-${digest(url)}`;
 }
 
-async function payload(repository) {
+// 仓库 payload（文件列表 + Git 状态）在 kernel 级大仓约 1s；工作区预载/切仓/IPC 重开
+// 常在同一秒内重复请求同一仓库，短 TTL 缓存可把重复打开降到毫秒级。显式刷新、
+// 切分支、同步必须走 fresh，避免把旧 HEAD/文件列表带进页面。
+const payloadCache = new Map();
+const payloadInFlight = new Map();
+const PAYLOAD_TTL_MS = 10_000;
+
+async function buildPayload(repository) {
   const [meta, files, status] = await Promise.all([
     repositoryMeta(repository.root),
     listSourceFiles(repository.root),
     repositoryStatus(repository.root),
   ]);
-  return { repository: { id: repository.id, source: repository.source, ...meta }, files, status };
+  return {
+    repository: { id: repository.id, source: repository.source, remoteUrl: repository.remoteUrl, ...meta },
+    files,
+    status,
+  };
 }
 
-export async function openLocal(localPath, { resume = false } = {}) {
+async function payload(repository, { fresh = false } = {}) {
+  const key = repository.root;
+  if (!fresh) {
+    const cached = payloadCache.get(key);
+    if (cached && Date.now() - cached.at < PAYLOAD_TTL_MS) return cached.data;
+    const inFlight = payloadInFlight.get(key);
+    if (inFlight) return inFlight;
+  }
+  const pending = buildPayload(repository).then((data) => {
+    payloadCache.set(key, { at: Date.now(), data });
+    return data;
+  });
+  payloadInFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (payloadInFlight.get(key) === pending) payloadInFlight.delete(key);
+  }
+}
+
+export async function openLocal(localPath, { resume = false, activate = true } = {}) {
   const root = await repositoryRoot(localPath);
   const id = `local-${digest(root)}`;
   const repository = { id, root, source: 'local' };
   repositories.set(id, repository);
-  await touchRepository(repository, { opened: true });
+  let workspace = null;
+  if (activate) {
+    await touchRepository(repository, { opened: true });
+    workspace = await activateRepository(repository);
+  }
   const data = await payload(repository);
-  if (!resume) return data;
-  return { ...data, resume: await getResume(repository) };
+  return {
+    ...data,
+    ...(workspace ? { workspace } : {}),
+    ...(resume ? { resume: await getResume(repository) } : {}),
+  };
 }
 
-export async function openRemote(remoteUrl, { resume = false } = {}) {
+export async function openRemote(remoteUrl, { resume = false, activate = true } = {}) {
   const url = validateRemote(remoteUrl);
   const id = `remote-${digest(url)}`;
   const destination = path.join(cloneRoot, remoteDirectoryName(url));
@@ -80,10 +119,17 @@ export async function openRemote(remoteUrl, { resume = false } = {}) {
 
   const repository = { id, root, source: 'remote', remoteUrl: url };
   repositories.set(id, repository);
-  await touchRepository(repository, { opened: true });
+  let workspace = null;
+  if (activate) {
+    await touchRepository(repository, { opened: true });
+    workspace = await activateRepository(repository);
+  }
   const data = await payload(repository);
-  if (!resume) return data;
-  return { ...data, resume: await getResume(repository) };
+  return {
+    ...data,
+    ...(workspace ? { workspace } : {}),
+    ...(resume ? { resume: await getResume(repository) } : {}),
+  };
 }
 
 export function getRepository(id) {

@@ -1,5 +1,5 @@
 // one-shot: code-reader 应用构建脚本（本项目固定模块，非 agent 探索脚本）; no-generalize: 仅用于构建 code-reader 前端编辑器包
-// grill: 成品检索=skill 库无 code-reader 构建脚本成品; 输入固定=web-src/editor.js、web-src/terminal.js 与固定 outfile; 步骤机械=esbuild 双入口打包+复制 xterm 样式; 判读固定=exit code 与产物大小; 失效场景=构造不出（仅本应用）
+// grill: 成品检索=skill 库无 code-reader 构建脚本成品; 输入固定=web-src/editor.js、web-src/terminal.js、three 构建产物与固定 outfile; 步骤机械=esbuild 双入口打包+复制 xterm 样式与 three 模块; 判读固定=exit code 与产物大小; 失效场景=构造不出（仅本应用）
 import { copyFile, mkdir } from 'node:fs/promises';
 import { build } from 'esbuild';
 

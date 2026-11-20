@@ -16,7 +16,7 @@ import {
   crosshairCursor,
   highlightSpecialChars,
 } from '@codemirror/view';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import {
   bracketMatching,
@@ -50,6 +50,24 @@ import { toml } from '@codemirror/legacy-modes/mode/toml';
 // selectParentSyntax（视觉上像进入 Visual）。Vim 模式下从 defaultKeymap 移除，
 // 让 @replit/codemirror-vim 的 <C-i> -> jumpListWalk(forward) 生效。
 const DEFAULT_KEYMAP_WITHOUT_CTRL_I = defaultKeymap.filter((binding) => binding.key !== 'Mod-i');
+
+// Vim 的 INSERT/REPLACE 模式才把 Tab 用于缩进；NORMAL/VISUAL 模式不注册 Tab
+// 绑定（返回 false），让浏览器默认行为把焦点移出编辑器。静态 indentWithTab
+// 会在所有模式吃掉 Tab/Shift+Tab，使编辑器成为无法用 Tab 离开的焦点陷阱。
+function vimTypingMode(view) {
+  const vimState = getCM(view)?.state?.vim;
+  if (!vimState) return false;
+  const mode = String(vimState.mode || '');
+  return vimState.insertMode === true || mode.startsWith('insert') || mode.startsWith('replace');
+}
+
+const VIM_TAB_KEYMAP = Prec.highest(keymap.of([
+  {
+    key: 'Tab',
+    run: (view) => (vimTypingMode(view) ? indentMore(view) : false),
+    shift: (view) => (vimTypingMode(view) ? indentLess(view) : false),
+  },
+]));
 
 // C/C++ 的 legacy 模式只输出 keyword/type/variable 粗粒度 token，而本地 nvim
 // 走 treesitter：struct/return/const、函数调用、成员访问、全大写宏颜色各不相同。
@@ -298,6 +316,8 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   };
   let cursorTimer = null;
   let view = null;
+  // gg 连击窗口（引用列表）：700ms 内按两次 g 跳到第一项。
+  let quickpickGPressedAt = 0;
 
   Vim.defineAction('readerGotoDefinition', () => onGotoDefinition());
   Vim.mapCommand('gd', 'action', 'readerGotoDefinition', undefined, { context: 'normal' });
@@ -474,7 +494,8 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
       themeCompartment.of(themeExtensionsFor(currentTheme)),
       displayCompartment.of(displayExtensions()),
       appKeymap,
-      keymap.of([...DEFAULT_KEYMAP_WITHOUT_CTRL_I, ...searchKeymap, ...historyKeymap, indentWithTab]),
+      VIM_TAB_KEYMAP,
+      keymap.of([...DEFAULT_KEYMAP_WITHOUT_CTRL_I, ...searchKeymap, ...historyKeymap]),
       vim(),
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) onSelectionChanged();
@@ -580,6 +601,7 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   // 引用预览的另一窗口：显示选中引用前后 10 行，并标出所在函数（Caller）。
   function renderQuickpickPreview(container) {
     const preview = state.quickpickPreview;
+    container.classList.toggle('pending', Boolean(preview?.pending));
     if (!preview || preview.status === 'loading') {
       container.textContent = '正在读取引用上下文…';
       return;
@@ -638,13 +660,32 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     renderQuickpickPreview(preview);
   }
 
+  // 预取相邻引用项的上下文：j/k 连续移动时下一个通常已命中缓存，
+// 预览不必每次都走「读取中」。
+  function warmQuickpickPreview(index) {
+    const loader = state.quickpickPreviewLoader;
+    const items = state.quickpickItems || [];
+    if (!loader || !items.length) return;
+    for (const offset of [1, -1]) {
+      const neighbor = items[(index + offset + items.length) % items.length];
+      if (!neighbor) continue;
+      Promise.resolve().then(() => loader(neighbor)).catch(() => {});
+    }
+  }
+
   function loadQuickpickPreview(index) {
     const loader = state.quickpickPreviewLoader;
     const items = state.quickpickItems || [];
     const item = items[index];
     if (!loader || !item) return;
     const token = ++state.quickpickPreviewToken;
-    state.quickpickPreview = { status: 'loading', item };
+    // 已经有预览时保留旧内容，只加 pending 提示；直接清空会让面板高度
+    // 在「一行提示 ↔ 21 行代码」之间反复跳，j/k 导航时就是用户看到的闪烁。
+    if (state.quickpickPreview?.status === 'done') {
+      state.quickpickPreview = { ...state.quickpickPreview, pending: true };
+    } else {
+      state.quickpickPreview = { status: 'loading', item };
+    }
     updateQuickpickPreview();
     Promise.resolve()
       .then(() => loader(item))
@@ -652,6 +693,7 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
         if (token !== state.quickpickPreviewToken || !state.quickpickItems) return;
         state.quickpickPreview = { status: 'done', item, data };
         updateQuickpickPreview();
+        warmQuickpickPreview(index);
       })
       .catch((error) => {
         if (token !== state.quickpickPreviewToken || !state.quickpickItems) return;
@@ -726,6 +768,50 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
       event.preventDefault();
       event.stopPropagation();
       pickQuickpick(state.quickpickIndex);
+    } else if (event.ctrlKey && ['d', 'u', 'f', 'b'].includes(event.key)) {
+      // 半屏/整屏：Ctrl+d/u/f/b（与其它窗口的 Vim 键一致）。
+      event.preventDefault();
+      event.stopPropagation();
+      const list = quickpick.querySelector('.quickpick-list');
+      const rowHeight = quickpick.querySelector('.quickpick-row')?.getBoundingClientRect().height || 24;
+      const page = Math.max(1, Math.floor((list?.clientHeight || 240) / Math.max(16, rowHeight)));
+      const step = event.key === 'd' || event.key === 'u'
+        ? Math.max(1, Math.round(page / 2))
+        : page;
+      const direction = event.key === 'd' || event.key === 'f' ? 1 : -1;
+      setQuickpickIndex(state.quickpickIndex + direction * step);
+    } else if (event.key === 'PageDown' || event.key === 'PageUp') {
+      event.preventDefault();
+      event.stopPropagation();
+      const list = quickpick.querySelector('.quickpick-list');
+      const rowHeight = quickpick.querySelector('.quickpick-row')?.getBoundingClientRect().height || 24;
+      const page = Math.max(1, Math.floor((list?.clientHeight || 240) / Math.max(16, rowHeight)));
+      setQuickpickIndex(state.quickpickIndex + (event.key === 'PageDown' ? page : -page));
+    } else if (event.key === 'H' || event.key === 'M' || event.key === 'L') {
+      event.preventDefault();
+      event.stopPropagation();
+      const index = event.key === 'H' ? 0
+        : event.key === 'M' ? Math.floor((items.length - 1) / 2)
+          : items.length - 1;
+      setQuickpickIndex(index);
+    } else if (event.key === 'G') {
+      event.preventDefault();
+      event.stopPropagation();
+      quickpickGPressedAt = 0;
+      setQuickpickIndex(items.length - 1);
+    } else if (event.key === 'g') {
+      // Vim 风格 gg：连按两次跳到第一项。
+      const now = Date.now();
+      if (now - quickpickGPressedAt <= 700) {
+        quickpickGPressedAt = 0;
+        event.preventDefault();
+        event.stopPropagation();
+        setQuickpickIndex(0);
+      } else {
+        quickpickGPressedAt = now;
+        event.preventDefault();
+        event.stopPropagation();
+      }
     } else if (/^[1-9]$/.test(event.key)) {
       const index = Number(event.key) - 1;
       if (index < items.length) {
@@ -762,6 +848,121 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     };
   }
 
+  // sneak（两字符跳转）只需要当前视口内的匹配：看不到的文本不应生成标签。
+  // 返回的是视口坐标，供导航层直接定位徽标；from/to 用于跳转时恢复编辑器选区。
+  function visibleMatches(query, limit = 80) {
+    const needle = String(query || '');
+    if (!needle) return [];
+    const matches = [];
+    const doc = view.state.doc;
+    outer: for (const range of view.visibleRanges) {
+      let pos = range.from;
+      while (pos <= range.to) {
+        const line = doc.lineAt(pos);
+        const from = Math.max(line.from, range.from);
+        const to = Math.min(line.to, range.to);
+        if (to >= from) {
+          const text = doc.sliceString(from, to);
+          let index = text.indexOf(needle);
+          while (index >= 0) {
+            const matchFrom = from + index;
+            const startCoords = view.coordsAtPos(matchFrom);
+            const endCoords = view.coordsAtPos(matchFrom + needle.length);
+            const top = Math.min(startCoords?.top ?? 0, endCoords?.top ?? 0);
+            const bottom = Math.max(startCoords?.bottom ?? 0, endCoords?.bottom ?? 0);
+            if (startCoords && endCoords && bottom > 0 && top < window.innerHeight) {
+              const left = Math.min(startCoords.left, endCoords.left);
+              // coordsAtPos 是光标矩形（宽度可能为 0），用起止两点合成匹配文本的矩形。
+              const right = Math.max(startCoords.right, endCoords.right, left + 4);
+              matches.push({
+                line: line.number,
+                from: matchFrom,
+                to: matchFrom + needle.length,
+                left,
+                top,
+                right,
+                bottom,
+              });
+              if (matches.length >= limit) break outer;
+            }
+            index = text.indexOf(needle, index + Math.max(1, needle.length));
+          }
+        }
+        if (line.to >= range.to) break;
+        pos = line.to + 1;
+      }
+    }
+    return matches;
+  }
+
+  // easymotion 风格行标签：给视口内每个逻辑行首打标签，输入标签即把光标移到该行。
+  // 只覆盖视口（visibleRanges），滚动后由导航层重新取坐标。
+  function visibleLines(limit = 160) {
+    const lines = [];
+    const seen = new Set();
+    const doc = view.state.doc;
+    outer: for (const range of view.visibleRanges) {
+      let pos = range.from;
+      while (pos <= range.to) {
+        const line = doc.lineAt(pos);
+        if (!seen.has(line.number)) {
+          seen.add(line.number);
+          const start = view.coordsAtPos(line.from);
+          if (start && start.bottom > 0 && start.top < window.innerHeight) {
+            // 行尾坐标只用来给标签算一个可见宽度（超长行不整行铺开）。
+            const end = view.coordsAtPos(Math.min(line.to, line.from + 160)) || start;
+            const left = Math.min(start.left, end.left);
+            const right = Math.max(start.right, end.right, left + 6);
+            if (right - left >= 4) {
+              lines.push({
+                line: line.number,
+                from: line.from,
+                to: line.to,
+                left,
+                top: Math.min(start.top, end.top),
+                right,
+                bottom: Math.max(start.bottom, end.bottom),
+              });
+            }
+          }
+          if (lines.length >= limit) break outer;
+        }
+        if (line.to >= range.to) break;
+        pos = line.to + 1;
+      }
+    }
+    return lines;
+  }
+
+  function coordsAtPosition(pos) {
+    try {
+      return view.coordsAtPos(pos);
+    } catch {
+      return null;
+    }
+  }
+
+  // 行标签跳转：落在行首第一个非空白字符（与 vim 的行跳转一致）。
+  function jumpToLine(lineNumber) {
+    const total = view.state.doc.lines;
+    const number = Math.max(1, Math.min(total, Number(lineNumber) || 1));
+    const line = view.state.doc.line(number);
+    const first = line.text.search(/\S/);
+    view.dispatch({
+      selection: { anchor: line.from + (first >= 0 ? first : 0) },
+      scrollIntoView: true,
+    });
+    view.focus();
+    return true;
+  }
+
+  function jumpToMatch(match) {
+    if (!match || typeof match.from !== 'number') return false;
+    view.dispatch({ selection: { anchor: match.from, head: match.to ?? match.from }, scrollIntoView: true });
+    view.focus();
+    return true;
+  }
+
   function setTheme(id) {
     currentTheme = id === 'local' ? 'local' : themeById(id).id;
     const palette = paletteFor(currentTheme);
@@ -795,6 +996,11 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     setTheme,
     setProfile,
     snapshot,
+    visibleMatches,
+    visibleLines,
+    coordsAtPosition,
+    jumpToMatch,
+    jumpToLine,
     themes: THEMES,
   };
 }

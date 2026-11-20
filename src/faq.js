@@ -327,6 +327,14 @@ export async function recordFaq(repositoryId, { file, line, question, explanatio
     && entry.lineEnd === segment.lineEnd
     && entry.question === normalized
   ));
+  // 兼容两种动画数据：新版是完整 {title, nodes, steps} 结构化对象；
+  // 旧版是 {id, title, steps} 引用（.data/animations/ 文件），统一按原样记录。
+  const animation = explanation.animation;
+  const animationRef = animation && typeof animation === 'object'
+    ? (typeof animation.id === 'string'
+      ? { id: animation.id, title: String(animation.title || ''), steps: Number(animation.steps) || 0 }
+      : animation)
+    : null;
   const payload = {
     file,
     line,
@@ -339,9 +347,9 @@ export async function recordFaq(repositoryId, { file, line, question, explanatio
     details: explanation.details,
     summary: explanation.summary,
     specifications: explanation.specifications,
-    evidence: explanation.evidence || [],
+evidence: explanation.evidence || [],
     nextSteps: explanation.nextSteps || [],
-    animation: explanation.animation || null,
+    animation: animationRef,
     model,
     head,
     contentHash: typeof content === 'string' ? segmentHash(content, segment) : '',
