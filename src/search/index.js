@@ -11,7 +11,7 @@ import path from 'node:path';
 import { dataPath } from '../paths.js';
 import { listSourceFiles, runGit } from '../git.js';
 import { searchConfig } from './config.js';
-import { canSearchFunctions, regexRank } from './query.js';
+import { canSearchFunctions, globRank, regexRank } from './query.js';
 import { definitionInfo } from './definitions.js';
 import { compareResults, fileMatchRank, matchLabel, matchRank } from './ranking.js';
 
@@ -354,6 +354,13 @@ function fuzzyRank(name, lower, parsed) {
 }
 
 function fileMatches(filePath, parsed) {
+  if (parsed.mode === 'glob') {
+    const base = path.posix.basename(filePath);
+    const baseRank = globRank(base, parsed.regex, parsed.text);
+    const pathRank = globRank(filePath, parsed.regex, parsed.text);
+    if (baseRank === null && pathRank === null) return null;
+    return baseRank ?? pathRank;
+  }
   if (parsed.regex) {
     const base = path.posix.basename(filePath);
     const baseRank = regexRank(base, parsed.regex);
@@ -367,6 +374,7 @@ function fileMatches(filePath, parsed) {
 }
 
 function symbolMatches(name, lower, parsed) {
+  if (parsed.mode === 'glob') return globRank(name, parsed.regex, parsed.text);
   if (parsed.regex) return regexRank(name, parsed.regex);
   if (!lower.includes(parsed.lower)) return null;
   return fuzzyRank(name, lower, parsed);

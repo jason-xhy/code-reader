@@ -5,7 +5,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { listSourceFiles, runGit } from '../git.js';
 import { searchConfig } from './config.js';
-import { parseQuery, regexRank } from './query.js';
+import { globRank, parseQuery, regexRank } from './query.js';
 import { definitionInfo } from './definitions.js';
 import { compareResults, fileMatchRank, matchLabel, matchRank } from './ranking.js';
 import {
@@ -86,11 +86,13 @@ function isSourceFile(filePath) {
 
 // 实时回退：只在索引未就绪时使用（大仓 kernel 约 1-2s）。
 async function searchFunctionsLive(root, parsed) {
-  if (parsed.mode === 'regex') {
+  if (parsed.mode !== 'fuzzy') {
     return {
       results: [],
       truncated: false,
-      warning: '索引构建中；正则函数搜索将在索引就绪后可用（文件名结果已返回）',
+      warning: parsed.mode === 'glob'
+        ? '索引构建中；通配符函数搜索将在索引就绪后可用（文件名结果已返回）'
+        : '索引构建中；正则函数搜索将在索引就绪后可用（文件名结果已返回）',
     };
   }
   const lowerQuery = parsed.lower;
@@ -140,9 +142,12 @@ async function searchFunctionsLive(root, parsed) {
 function searchFiles(files, parsed) {
   const results = [];
   for (const filePath of files) {
-    const rank = parsed.regex
-      ? (regexRank(path.posix.basename(filePath), parsed.regex) ?? regexRank(filePath, parsed.regex))
-      : (filePath.toLowerCase().includes(parsed.lower) ? fileMatchRank(filePath, parsed.text) : null);
+    const base = path.posix.basename(filePath);
+    const rank = parsed.mode === 'glob'
+      ? (globRank(base, parsed.regex, parsed.text) ?? globRank(filePath, parsed.regex, parsed.text))
+      : parsed.regex
+        ? (regexRank(base, parsed.regex) ?? regexRank(filePath, parsed.regex))
+        : (filePath.toLowerCase().includes(parsed.lower) ? fileMatchRank(filePath, parsed.text) : null);
     if (rank === null) continue;
     results.push({
       kind: 'file',
@@ -186,6 +191,7 @@ async function worktreeChanges(root, head) {
 }
 
 function matchesName(name, parsed) {
+  if (parsed.mode === 'glob') return globRank(name, parsed.regex, parsed.text);
   if (parsed.regex) return regexRank(name, parsed.regex);
   return name.toLowerCase().includes(parsed.lower) ? matchRank(name, parsed.text) : null;
 }

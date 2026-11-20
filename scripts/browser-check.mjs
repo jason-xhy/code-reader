@@ -1113,6 +1113,71 @@ try {
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 400 });
   await sleep(700);
 
+  // 需求行为断言：Ctrl+Alt+B/I 与 gr 打开窗口后，j/k 必须作用于窗口，
+  // 编辑器光标不能移动。只断言 activeElement 属于中间形态，覆盖不了
+  // 「窗口可见但键盘仍落在代码窗」的回归（2026-11-20 用户实测点破）。
+  await evaluate("document.querySelector('.cm-content').focus(); true");
+  await sleep(150);
+  const cursorBeforePanels = await evaluate('window.__ts.snapshot().editor.cursor.line');
+  await pressRealKey('b', 'KeyB', 66, 3);
+  await sleep(700);
+  const treeBeforeJ = await evaluate("[...document.querySelectorAll('#file-tree .tree-row')].findIndex((row) => row.classList.contains('key-focus'))");
+  await pressRealKey('j', 'KeyJ', 74);
+  await sleep(300);
+  const treeBehaviour = await evaluateJson(`JSON.stringify({
+    inTree: Boolean(document.activeElement?.closest?.('#file-tree')),
+    index: [...document.querySelectorAll('#file-tree .tree-row')].findIndex((row) => row.classList.contains('key-focus')),
+    cursor: window.__ts.snapshot().editor.cursor.line,
+  })`);
+  check(
+    'Ctrl+Alt+B 打开后 j 移动文件树选中行且编辑器光标不动',
+    treeBehaviour.inTree && treeBehaviour.index === treeBeforeJ + 1 && treeBehaviour.cursor === cursorBeforePanels,
+    JSON.stringify({ treeBeforeJ, treeBehaviour, cursorBeforePanels }),
+  );
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(300);
+
+  await evaluate("document.querySelector('.cm-content').focus(); true");
+  await sleep(150);
+  await pressRealKey('i', 'KeyI', 73, 3);
+  await sleep(700);
+  await pressRealKey('j', 'KeyJ', 74);
+  await sleep(300);
+  const insightsBehaviour = await evaluateJson(`JSON.stringify({
+    inInsights: Boolean(document.activeElement?.closest?.('.insights')),
+    visible: document.querySelector('#app').classList.contains('insights-visible'),
+    cursor: window.__ts.snapshot().editor.cursor.line,
+  })`);
+  check(
+    'Ctrl+Alt+I 打开后 j 留在解释窗口且编辑器光标不动',
+    insightsBehaviour.visible && insightsBehaviour.inInsights && insightsBehaviour.cursor === cursorBeforePanels,
+    JSON.stringify({ insightsBehaviour, cursorBeforePanels }),
+  );
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(300);
+
+  await evaluate("document.querySelector('.cm-content').focus(); true");
+  await evaluate('window.__ts.showTestQuickpick(); true');
+  await sleep(400);
+  const grIndexBefore = await evaluate("[...document.querySelectorAll('#quickpick .quickpick-row')].findIndex((row) => row.classList.contains('active'))");
+  await pressRealKey('j', 'KeyJ', 74);
+  await sleep(300);
+  const grBehaviour = await evaluateJson(`JSON.stringify({
+    inQuickpick: Boolean(document.activeElement?.closest?.('#quickpick')),
+    index: [...document.querySelectorAll('#quickpick .quickpick-row')].findIndex((row) => row.classList.contains('active')),
+    cursor: window.__ts.snapshot().editor.cursor.line,
+  })`);
+  check(
+    'gr 引用列表打开后 j 切换选中行且编辑器光标不动',
+    grBehaviour.inQuickpick && grBehaviour.index === grIndexBefore + 1
+    && grBehaviour.cursor === cursorBeforePanels,
+    JSON.stringify({ grIndexBefore, grBehaviour, cursorBeforePanels }),
+  );
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(300);
+  await evaluate("document.querySelector('.cm-content').focus(); true");
+  await sleep(150);
+
   // 原生对话框同样支持 j/k/gg/G（文本输入框不在项列表里，用 Tab 进入）。
   await evaluate("document.querySelector('#open-menu').click(); true");
   await waitFor("Boolean(document.querySelector('dialog[open]'))", 5000);
@@ -1270,6 +1335,28 @@ try {
   await sleep(150);
   const ctrlKActive = await evaluate("[...document.querySelectorAll('#quickpick .quickpick-row')].findIndex((row) => row.classList.contains('active'))");
   check('工作区搜索：Ctrl+j/k 在输入框内选择结果', ctrlJActive === 1 && ctrlKActive === 0, JSON.stringify({ ctrlJActive, ctrlKActive }));
+  // 通配符：当前文件名换成同一 stem 的 glob（xhci-ring.c → xhci-ring*.c），
+  // 结果里必须仍能找到当前文件，且标题提示通配符语法。
+  const globStem = currentBase.replace(/\.[^.]+$/, '');
+  const globExt = currentBase.slice(globStem.length);
+  const globQuery = globStem && globExt ? `${globStem}*${globExt}` : '';
+  if (globQuery) {
+    await evaluate(`(() => { const input = document.querySelector('.quickpick-input'); input.value = ${JSON.stringify(globQuery)}; input.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    await waitFor(`[...document.querySelectorAll('#quickpick .quickpick-location')].some((node) => node.textContent.startsWith(${JSON.stringify(`${searchSeed.currentFile}:`)}))`, 20000);
+    const globSearch = await evaluateJson(`JSON.stringify({
+      placeholder: document.querySelector('#quickpick .quickpick-input')?.placeholder || '',
+      hit: [...document.querySelectorAll('#quickpick .quickpick-location')].some((node) => node.textContent.startsWith(${JSON.stringify(`${searchSeed.currentFile}:`)}))
+        || [...document.querySelectorAll('#quickpick .quickpick-label')].some((node) => node.textContent === ${JSON.stringify(currentBase)}),
+      rows: document.querySelectorAll('#quickpick .quickpick-row').length,
+    })`);
+    check(
+      '工作区搜索：通配符 xhci-ring*.c 命中当前文件',
+      globSearch.hit && globSearch.rows > 0 && globSearch.placeholder.includes('通配符'),
+      JSON.stringify({ globQuery, globSearch }),
+    );
+  } else {
+    check('工作区搜索：通配符 xhci-ring*.c 命中当前文件（文件名无扩展名，跳过）', false, `base=${currentBase}`);
+  }
   await evaluate("document.querySelector('.quickpick-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); true");
 
   // #7 nvim 占位：工具条紧凑、无底部重复状态栏、终端占满代码区。

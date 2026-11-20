@@ -44,8 +44,8 @@ export function openWorkspaceSearch() {
     if (!query) {
       editor.updateQuickpickItems([], {
         sessionId,
-        title: '在工作区搜索函数或文件名 · 支持 /正则/ · 完全匹配优先',
-        emptyText: '输入关键字开始搜索（函数名或文件名，或输入 /正则/）',
+        title: '在工作区搜索函数或文件名 · 支持 * ? 通配符与 /正则/ · 完全匹配优先',
+        emptyText: '输入关键字开始搜索（函数名或文件名，支持 xhci*.c 这类通配符，或输入 /正则/）',
       });
       return;
     }
@@ -86,10 +86,10 @@ export function openWorkspaceSearch() {
     deps.jumpTo({ path: item.path, line: item.line, character: item.character || 0 });
   }, {
     sessionId,
-    title: '在工作区搜索函数或文件名 · 支持 /正则/ · ↑/↓ 或 Ctrl+j/k 选择',
-    emptyText: '输入关键字开始搜索（函数名或文件名，或输入 /正则/）',
+    title: '在工作区搜索函数或文件名 · 支持 * ? 通配符与 /正则/ · ↑/↓ 或 Ctrl+j/k 选择',
+    emptyText: '输入关键字开始搜索（函数名或文件名，支持 xhci*.c 这类通配符，或输入 /正则/）',
     input: {
-      placeholder: '搜索函数/文件名，或 /正则/（默认忽略大小写）…',
+      placeholder: '搜索函数/文件名，支持 * ? 通配符或 /正则/（默认忽略大小写）…',
       onChange: (value) => run(value),
     },
     preview: loadContextPreview,

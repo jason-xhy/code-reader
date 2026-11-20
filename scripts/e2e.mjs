@@ -465,6 +465,28 @@ try {
   );
   const badRegex = await api('GET', `${repoBase}/search?q=${encodeURIComponent('/[/')}`);
   assert(badRegex.status === 400, '工作区搜索：非法正则返回 400', `status=${badRegex.status}`);
+  // 通配符：文件名与函数名都按 * / ? 匹配，且锚定（不命中尾部多出的后缀）。
+  const searchGlobFile = await api('GET', `${repoBase}/search?q=${encodeURIComponent('sample*.c')}`);
+  assert(
+    searchGlobFile.data.mode === 'glob'
+    && searchGlobFile.data.results?.some((item) => item.kind === 'file' && item.path === 'sample.c')
+    && !searchGlobFile.data.results?.some((item) => item.kind === 'file' && item.path === 'sample.h'),
+    '工作区搜索：sample*.c 通配符命中 sample.c 而不命中 sample.h',
+    JSON.stringify(searchGlobFile.data.results),
+  );
+  const searchGlobFunction = await api('GET', `${repoBase}/search?q=${encodeURIComponent('demo_*')}`);
+  const globFunctionNames = (searchGlobFunction.data.results || [])
+    .filter((item) => item.kind === 'function')
+    .map((item) => item.name)
+    .sort();
+  assert(
+    searchGlobFunction.data.mode === 'glob'
+    && globFunctionNames.join(',') === 'demo_entry,demo_handle',
+    '工作区搜索：demo_* 通配符命中两个函数',
+    JSON.stringify(globFunctionNames),
+  );
+  const globMiss = await api('GET', `${repoBase}/search?q=${encodeURIComponent('sample.c.bak')}`);
+  assert(globMiss.data.results?.length === 0, '工作区搜索：无通配符时仍按字面量匹配', JSON.stringify(globMiss.data.results));
   const typedInfo = definitionInfo('struct foo_t *foo(void)');
   assert(
     definitionName('static int foo(struct x *p)') === 'foo'
