@@ -262,30 +262,45 @@ try {
     && hiddenPanels.reader.width >= hiddenPanels.viewport - 1,
     JSON.stringify(hiddenPanels),
   );
+  // 悬停滑出面板=打开窗口：焦点立即交给窗口内容（窗口自己接收按键，而不是编辑器继续吃键）。
   await evaluate("document.querySelector('#sidebar-trigger').dispatchEvent(new PointerEvent('pointerenter')); true");
   await sleep(260);
   const sidebarHover = await panelState();
+  const sidebarHoverFocus = await evaluate("document.activeElement?.id || ''");
   check(
-    '鼠标移到左边缘显示代码树',
-    sidebarHover.classes.includes('sidebar-visible') && sidebarHover.sidebar.left >= 0 && sidebarHover.sidebar.right > 100,
-    JSON.stringify(sidebarHover),
+    '鼠标移到左边缘打开代码树并把焦点交给文件树',
+    sidebarHover.classes.includes('sidebar-visible') && sidebarHover.sidebar.left >= 0
+    && sidebarHover.sidebar.right > 100 && sidebarHoverFocus === 'file-tree',
+    JSON.stringify({ ...sidebarHover, focus: sidebarHoverFocus }),
   );
+  // 窗口已有焦点，鼠标离开不收起（与键盘聚焦阅读一致）；q 把焦点还给代码窗后才收起。
   await evaluate("document.querySelector('#sidebar-trigger').dispatchEvent(new PointerEvent('pointerleave')); document.querySelector('.sidebar').dispatchEvent(new PointerEvent('pointerleave')); true");
   await sleep(650);
+  const sidebarKept = await panelState();
+  check('焦点在代码树时鼠标离开仍保持', sidebarKept.classes.includes('sidebar-visible'), JSON.stringify(sidebarKept));
+  await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'q', code: 'KeyQ', bubbles: true })); true");
+  await sleep(650);
   const sidebarGone = await panelState();
-  check('鼠标离开后代码树收起', !sidebarGone.classes.includes('sidebar-visible') && sidebarGone.sidebar.right <= 0, JSON.stringify(sidebarGone));
+  check('q 返回代码窗后代码树收起', !sidebarGone.classes.includes('sidebar-visible') && sidebarGone.sidebar.right <= 0, JSON.stringify(sidebarGone));
+
   await evaluate("document.querySelector('#insights-trigger').dispatchEvent(new PointerEvent('pointerenter')); true");
   await sleep(260);
   const insightsHover = await panelState();
+  const insightsHoverFocus = await evaluate("document.activeElement?.id || ''");
   check(
-    '鼠标移到右边缘显示分析栏',
-    insightsHover.classes.includes('insights-visible') && insightsHover.insights.left < insightsHover.viewport - 100,
-    JSON.stringify(insightsHover),
+    '鼠标移到右边缘打开分析栏并把焦点交给解释窗口',
+    insightsHover.classes.includes('insights-visible')
+    && insightsHover.insights.left < insightsHover.viewport - 100 && insightsHoverFocus === 'explanation-content',
+    JSON.stringify({ ...insightsHover, focus: insightsHoverFocus }),
   );
   await evaluate("document.querySelector('#insights-trigger').dispatchEvent(new PointerEvent('pointerleave')); document.querySelector('.insights').dispatchEvent(new PointerEvent('pointerleave')); true");
   await sleep(650);
+  const insightsKept = await panelState();
+  check('焦点在解释窗口时鼠标离开仍保持', insightsKept.classes.includes('insights-visible'), JSON.stringify(insightsKept));
+  await evaluate("document.querySelector('.cm-content').focus(); true");
+  await sleep(650);
   const insightsGone = await panelState();
-  check('鼠标离开后分析栏收起', !insightsGone.classes.includes('insights-visible'), JSON.stringify(insightsGone));
+  check('焦点回代码窗后分析栏收起', !insightsGone.classes.includes('insights-visible'), JSON.stringify(insightsGone));
 
   // Ctrl+Alt+B / Ctrl+Alt+I：按一次打开（钉住，鼠标移开仍保持），再按一次关闭。
   const pressPanelKey = async (code, key) => {
@@ -1015,7 +1030,7 @@ try {
     check('文件树 gg/G 跳到首个/最后一个文件（需要 ≥3 行）', false, `rows=${treeRowCount}`);
   }
 
-  // 悬停打开的代码树不抢编辑器焦点；鼠标停在侧栏上时 j/k 应直接导航文件树。
+  // 悬停打开代码树=打开窗口：焦点立即交给文件树，j/k 由树自己处理。
   await evaluate("document.querySelector('.cm-content').focus(); true");
   await pressRealKey('Escape', 'Escape', 27);
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 4, y: 300 });

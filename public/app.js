@@ -475,7 +475,15 @@ loadLayout();
 applyLayout();
 initSplitter('left');
 initSplitter('right');
-initAutoPanels();
+initAutoPanels({
+  focus: {
+    // 悬停滑出与快捷键/点击同义：窗口一打开，焦点就交给窗口内容。
+    sidebar: () => {
+      if (!focusTree()) elements.fileTree.focus({ preventScroll: true });
+    },
+    insights: () => focusExplanationPanel(),
+  },
+});
 populateThemes();
 applyShellTheme(editor.setTheme(state.theme));
 loadReadingHistory();

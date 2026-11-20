@@ -78,8 +78,9 @@ export function initSplitter(side) {
 }
 
 // 两侧栏默认收起为覆盖层：鼠标移到左/右边缘或面板上滑入，离开后延迟收起。
+// 打开窗口（含悬停滑出）即把焦点交给窗口内容，与快捷键/点击同一语义；
 // 焦点进入面板时保持展开；隐藏面板设 inert，避免焦点落进屏幕外。
-export function initAutoPanels() {
+export function initAutoPanels({ focus = {} } = {}) {
   const app = document.getElementById('app');
   const panels = [
     { name: 'sidebar', el: elements.sidebar, trigger: elements.sidebarTrigger, splitter: elements.splitterLeft },
@@ -138,10 +139,22 @@ export function initAutoPanels() {
     }
     return true;
   };
+  // 鼠标滑出面板是「打开/激活窗口」：与 Ctrl+Alt+B/I 一样把焦点交给窗口内容。
+  // 否则窗口可见但焦点仍在代码窗，j/k 等按键会继续落在编辑器里。
+  const openByPointer = (panel) => {
+    if (!panel) return;
+    reveal(panel);
+    // reveal 可能因 suppress（刚收起 400ms 内）被跳过：没真正打开就不移交焦点。
+    if (!app.classList.contains(`${panel.name}-visible`)) return;
+    // 焦点已在窗口内部时不打断（指针移进正在阅读的窗口不该重排焦点）。
+    const active = document.activeElement;
+    if (active && panel.el.contains(active)) return;
+    focus[panel.name]?.();
+  };
   for (const panel of panels) {
-    panel.trigger.addEventListener('pointerenter', () => reveal(panel));
+    panel.trigger.addEventListener('pointerenter', () => openByPointer(panel));
     panel.trigger.addEventListener('pointerleave', () => scheduleConceal(panel));
-    panel.el.addEventListener('pointerenter', () => reveal(panel));
+    panel.el.addEventListener('pointerenter', () => openByPointer(panel));
     panel.el.addEventListener('pointerleave', () => scheduleConceal(panel));
     panel.el.addEventListener('focusin', () => reveal(panel, { force: true }));
     panel.el.addEventListener('focusout', (event) => {
