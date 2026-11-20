@@ -1015,6 +1015,26 @@ try {
     check('文件树 gg/G 跳到首个/最后一个文件（需要 ≥3 行）', false, `rows=${treeRowCount}`);
   }
 
+  // 悬停打开的代码树不抢编辑器焦点；鼠标停在侧栏上时 j/k 应直接导航文件树。
+  await evaluate("document.querySelector('.cm-content').focus(); true");
+  await pressRealKey('Escape', 'Escape', 27);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 4, y: 300 });
+  await sleep(400);
+  await pressRealKey('j', 'KeyJ', 74);
+  const hoverNav = await evaluateJson(`JSON.stringify({
+    sidebarVisible: document.querySelector('#app').classList.contains('sidebar-visible'),
+    active: document.activeElement?.id || document.activeElement?.className || '',
+    focused: [...document.querySelectorAll('#file-tree .tree-row')].findIndex((row) => row.classList.contains('key-focus')),
+  })`);
+  check(
+    '悬停打开代码树后 j/k 直接导航文件树',
+    hoverNav.sidebarVisible && hoverNav.active === 'file-tree' && hoverNav.focused >= 0,
+    JSON.stringify(hoverNav),
+  );
+  await evaluate("document.querySelector('.cm-content').focus(); true");
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 400 });
+  await sleep(700);
+
   // 原生对话框同样支持 j/k/gg/G（文本输入框不在项列表里，用 Tab 进入）。
   await evaluate("document.querySelector('#open-menu').click(); true");
   await waitFor("Boolean(document.querySelector('dialog[open]'))", 5000);

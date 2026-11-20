@@ -5,6 +5,7 @@ import { state, sessions, jumpStack, jumpForwardStack, editor } from '../core/st
 import { copyText } from '../core/api.js';
 import { FILE_ICONS, MAX_PREPARED_FILES, PREPARED_LIMIT, TREE_FILTER_LIMIT } from '../core/config.js';
 import { focusFirstMenuItem, scheduleIdle } from '../core/utils.js';
+import { isEditableTarget, topLayerOpen } from '../core/policies.js';
 
 let deps = {};
 
@@ -460,7 +461,8 @@ function wireTreeEvents() {
     else state.filterIndex = (state.filterIndex + delta + matches.length) % matches.length;
     updateFilterFocus();
   });
-  elements.fileTree.addEventListener('keydown', (event) => {
+
+  function handleTreeKeydown(event) {
     if (event.isComposing || event.keyCode === 229) return;
     const rows = treeRows();
     if (!rows.length) return;
@@ -557,7 +559,38 @@ function wireTreeEvents() {
       return;
     }
     finish();
-  });
+  }
+
+  elements.fileTree.addEventListener('keydown', handleTreeKeydown);
+
+  // 悬停/点击打开的代码树不抢编辑器焦点（避免打断阅读与输入），但鼠标停在侧栏上时
+  // 用户按 j/k 的意图是导航文件树：捕获阶段把焦点交给文件树并复用同一套按键处理。
+  // 只在焦点不在侧栏、且编辑器处于 NORMAL（或焦点不在编辑器）时接管；INSERT/VISUAL
+  // 下 j/k 属于编辑操作，仍归编辑器。
+  const treePointerActive = () => Boolean(
+    elements.sidebar?.matches(':hover') || elements.sidebarTrigger?.matches(':hover'),
+  );
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+    if (!['j', 'k', 'ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    const app = document.getElementById('app');
+    if (!app.classList.contains('sidebar-visible') || !treePointerActive()) return;
+    const active = document.activeElement;
+    if (active && elements.sidebar.contains(active)) return;
+    if (active?.closest?.('.insights, #nvim-host, .xterm')) return;
+    if (topLayerOpen()) return;
+    if (active?.closest?.('#editor-host')) {
+      if (editor?.snapshot?.().mode !== 'NORMAL') return;
+    } else if (isEditableTarget(active)) {
+      return;
+    }
+    if (!focusTree()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    handleTreeKeydown(event);
+  }, true);
+
   elements.fileTree.addEventListener('click', async (event) => {
     const row = event.target.closest('.tree-row');
     if (!row) return;
