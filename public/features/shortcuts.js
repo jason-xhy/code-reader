@@ -112,7 +112,7 @@ export function initShortcuts() {
       closeCommitOverlay();
       return;
     }
-    if (event.key === 'Escape' && state.questionOpen && !state.explaining) {
+    if (event.key === 'Escape' && state.questionOpen) {
       event.preventDefault();
       closeQuestion();
       editor?.focus();

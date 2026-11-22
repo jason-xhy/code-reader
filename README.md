@@ -93,6 +93,10 @@ PORT=8766 npm start
 
 打开页面后点击「打开」，输入本地仓库路径，或粘贴远程仓库 URL（目录浏览器中单击选中、双击进入）；新打开的仓库会加入工作区，之后用顶部页签或 `Ctrl+Alt+[` / `Ctrl+Alt+]`（`Ctrl+Alt+Shift+1..9` 直达）继续打开/切换其它仓库。代码树与右侧分析栏默认收起，鼠标移到窗口左/右边缘即可滑出。刷新页面会自动恢复上次的仓库与位置。首次使用 LLM 解释前，点击左下角「LLM 设置」选择厂商、协议和模型并保存 API Key。
 
+OpenAI 支持刷新当前 Key 可访问的文本模型列表；Key 仅存系统钥匙串，保存后会完整回读校验。模型请求支持桌面 HTTP(S) 代理环境变量，本地回环请求直连。
+
+也可选择「ChatGPT（本机 Codex 登录）」复用本机已安装并登录的 Codex CLI，无需把 ChatGPT 登录令牌填入 API Key。该通道使用临时只读会话，模型权限取决于当前登录。
+
 ### 自定义 Anthropic 兼容网关
 
 在「LLM 设置」中选择「自定义兼容服务」：
@@ -109,10 +113,15 @@ PORT=8766 npm start
 npm run check         # 语法检查
 npm run test:llm      # Anthropic 协议与解析回归
 npm run e2e           # 端到端 API 回归（临时 Git 仓库）
+npm run test:keyboard # 隔离仓库的键盘焦点回归（需系统 Chrome）
 npm run test:browser  # 浏览器验收：工作区/侧栏/过滤/引用预览/3D viewer（需系统 Chrome）
 ```
 
 `test:browser` 默认只读检查（`CODE_READER_URL` 可改地址，`CHROME_BIN` 可指定 Chrome）；加 `-- --switch` 会额外验证工作区快捷键、仓库切换与切换后刷新，结束后自动恢复原当前仓库。
+
+专项回归：`node scripts/question-regression.mjs`、`node scripts/docs-regression.mjs`、`node scripts/workspace-regression.mjs`、`node scripts/theme-regression.mjs`。端口冲突时可设置 `CODE_READER_TEST_PORT` 和 `CODE_READER_TEST_LLM_PORT`；旧 `E2E_LLM_PORT` 仍兼容。
+
+[2026-11-22 纯键盘测试、修复边界和验证报告](bug-reports/keyboard-20261122/README.md)记录了 GUI 与自动化证据及限制。
 
 ## 安全说明
 

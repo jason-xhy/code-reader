@@ -103,11 +103,19 @@ export const sourceRoutes = [
       const line = integerParam(String(body.line || ''));
       const source = await readSource(current.root, body.path || '');
       if (line > source.lines) throw new AppError('行号超出文件范围', 400, 'INVALID_LINE');
-      const explanation = await explainSource(source, body.path, line, body.question, {
+      const controller = new AbortController();
+      const cancel = () => { if (!response.writableEnded) controller.abort(); };
+      response.on('close', cancel);
+      let explanation;
+      try {
+        explanation = await explainSource(source, body.path, line, body.question, {
         repositoryRoot: current.root,
         repositoryId: current.id,
         animate: body.animate === true,
+        signal: controller.signal,
       });
+      } finally { response.removeListener('close', cancel); }
+      controller.signal.throwIfAborted();
       let faq = null;
       try {
         const segment = detectSegment(source.content, line);

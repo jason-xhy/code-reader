@@ -2,7 +2,7 @@
 // grill: 成品检索=skill 库无 code-reader e2e 成品; 输入固定=临时 bare 仓库+固定 API 路径; 步骤机械=建仓/调 API/断言; 判读固定=HTTP 200 与字段值; 失效场景=构造不出（仅本应用）
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,8 +18,9 @@ import { definitionInfo, definitionName } from '../src/search/definitions.js';
 import { matchRank } from '../src/search/ranking.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-const base = 'http://127.0.0.1:8799';
-const stubPort = Number(process.env.E2E_LLM_PORT || 8899);
+const testPort = Number(process.env.CODE_READER_TEST_PORT || 8799);
+const stubPort = Number(process.env.CODE_READER_TEST_LLM_PORT || process.env.E2E_LLM_PORT || 8899);
+const base = `http://127.0.0.1:${testPort}`;
 const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'cr-e2e-')));
 const work = path.join(root, 'work');
 const peer = path.join(root, 'peer');
@@ -141,6 +142,8 @@ async function waitForServer() {
 
 let stubCalls = 0;
 let lastUserContent = '';
+let slowStarted = false;
+let slowCanceled = false;
 const stub = createServer(async (request, response) => {
   let body = '';
   for await (const chunk of request) body += chunk;
@@ -152,6 +155,11 @@ const stub = createServer(async (request, response) => {
     messages = [];
   }
   lastUserContent = messages.filter((message) => message.role === 'user').map((message) => String(message.content || '')).join('\n');
+  if (lastUserContent.includes('TRIGGER_SLOW_CANCEL')) {
+    slowStarted = true;
+    response.on('close', () => { slowCanceled = true; });
+    return;
+  }
 const animationRequested = lastUserContent.includes('"animationRequested":true');
   const payload = {
     overview: '概览',
@@ -232,17 +240,21 @@ writeFileSync(profileFixture, JSON.stringify({
   ],
 }, null, 2));
 
+const editorStub = path.join(root, 'editor-stub');
+writeFileSync(editorStub, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "NVIM test stub"; exit 0; fi\nexec /bin/cat\n');
+chmodSync(editorStub, 0o755);
+
 const server = spawn(process.execPath, ['server.js'], {
   cwd: repoRoot,
   env: {
     ...process.env,
-    PORT: '8799',
+    PORT: String(testPort),
     CODE_READER_DATA_DIR: dataDir,
     LLM_API_KEY: 'test-key',
     LLM_MODEL: 'stub-model',
     LLM_BASE_URL: `http://127.0.0.1:${stubPort}/v1`,
     LLM_PROTOCOL: 'openai',
-    CODE_READER_NVIM: '/bin/cat',
+    CODE_READER_NVIM: editorStub,
     CODE_READER_PROFILE_JSON: profileFixture,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -356,6 +368,18 @@ try {
   const explain = await api('POST', `${repoBase}/explain`, { path: 'base.txt', line: 1, question: '这一行是什么？' });
   assert(explain.status === 200 && explain.data.explanation?.overview === '概览', 'explain 非 JSON 响应重试后成功', `status=${explain.status}`);
   assert(stubCalls >= 2, 'LLM 桩收到重试请求', `calls=${stubCalls}`);
+
+  const cancel = new AbortController();
+  const pendingExplanation = fetch(`${base}${repoBase}/explain`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, signal: cancel.signal,
+    body: JSON.stringify({ path: 'base.txt', line: 1, question: 'TRIGGER_SLOW_CANCEL' }),
+  }).catch((error) => error);
+  for (let i = 0; i < 100 && !slowStarted; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert(slowStarted, '取消测试已到达真实模型传输层');
+  cancel.abort();
+  await pendingExplanation;
+  for (let i = 0; i < 100 && !slowCanceled; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert(slowCanceled, '浏览器断开请求会取消后端模型传输');
 
   const commitHash = history.data.commits[0].hash;
   const commit = await api('GET', `${repoBase}/commit?hash=${encodeURIComponent(commitHash)}`);
@@ -957,13 +981,13 @@ appSource.includes('createAnimationHtml') && appSource.includes('fetchFunctionHi
   assert(editorEnv.status === 200 && Boolean(editorEnv.data.nvim) && Boolean(editorEnv.data.active), '编辑器环境接口返回探测结果', JSON.stringify(editorEnv.data).slice(0, 200));
   const builtin = await api('POST', '/api/editor', { program: 'builtin' });
   assert(builtin.status === 200 && builtin.data.active?.program === 'builtin' && builtin.data.available === false, '可切换到内置编辑器');
-  const nvimBlocked = await probeNvim(`ws://127.0.0.1:8799/nvim?repository=${encodeURIComponent(id)}`, []);
+  const nvimBlocked = await probeNvim(`ws://127.0.0.1:${testPort}/nvim?repository=${encodeURIComponent(id)}`, []);
   assert(!nvimBlocked.ok, '内置模式下 nvim WS 被拒绝', JSON.stringify(nvimBlocked).slice(0, 200));
   const restored = await api('POST', '/api/editor', { program: 'auto' });
   assert(restored.status === 200 && restored.data.saved?.program === 'auto', '可恢复自动选择');
-  const nvimEcho = await probeNvim(`ws://127.0.0.1:8799/nvim?repository=${encodeURIComponent(id)}`, [{ t: 'i', d: 'ping\n' }]);
+  const nvimEcho = await probeNvim(`ws://127.0.0.1:${testPort}/nvim?repository=${encodeURIComponent(id)}`, [{ t: 'i', d: 'ping\n' }]);
   assert(nvimEcho.ok, 'nvim WS/PTY 双向转发（stub 回显）', JSON.stringify(nvimEcho).slice(0, 200));
-  const nvimBadOrigin = await probeNvim(`ws://127.0.0.1:8799/nvim?repository=${encodeURIComponent(id)}`, [], { origin: 'http://evil.example' });
+  const nvimBadOrigin = await probeNvim(`ws://127.0.0.1:${testPort}/nvim?repository=${encodeURIComponent(id)}`, [], { origin: 'http://evil.example' });
   assert(!nvimBadOrigin.ok, 'nvim WS 拒绝非本机来源', JSON.stringify(nvimBadOrigin).slice(0, 200));
   const terminalBundle = await fetch(base + '/vendor/xterm/terminal.bundle.js');
   assert(terminalBundle.status === 200, 'xterm 终端预构建包可访问');

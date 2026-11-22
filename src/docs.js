@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { AppError } from './errors.js';
 import { dataPath } from './paths.js';
+import { CONFIGURED_DOCUMENTATION_WEIGHT, documentationQueryWeight, documentationSourceTerms } from './policies/documentation.js';
 
 const execFileAsync = promisify(execFile);
 const configPath = dataPath('docs-config.json');
@@ -223,6 +224,7 @@ function chunkDocument(text, source, rel, root, extension) {
 function tokenize(text) {
   const lower = String(text || '').toLowerCase();
   const tokens = lower.match(/[a-z0-9_]{2,}/g) || [];
+  for (const token of [...tokens]) if (token.includes('_')) tokens.push(...token.split('_').filter((part) => part.length >= 2));
   const cjkBlocks = lower.match(/[\u4e00-\u9fff]+/g) || [];
   for (const block of cjkBlocks) {
     if (block.length === 1) tokens.push(block);
@@ -271,8 +273,9 @@ function isTableOfContents(text) {
   return (text.match(/\.{4,}/g) || []).length >= 3;
 }
 
-function scoreChunks(chunks, query) {
-  const queryTokens = [...new Set(tokenize(query))].slice(0, 128);
+function scoreChunks(chunks, query, sourceQuery = '', preferredRoots = []) {
+  const sourceTerms = documentationSourceTerms(sourceQuery);
+  const queryTokens = [...new Set([...sourceTerms, ...tokenize(query)])].slice(0, 128);
   if (!queryTokens.length || !chunks.length) return [];
   const documentFrequency = new Map();
   let totalLength = 0;
@@ -294,8 +297,9 @@ function scoreChunks(chunks, query) {
       if (!frequency) continue;
       const df = documentFrequency.get(token) || 0;
       const idf = Math.log(1 + (total - df + 0.5) / (df + 0.5));
-      score += idf * ((frequency * 2.2) / (frequency + 1.2 * (0.25 + 0.75 * (chunk.tokens.length / averageLength))));
+      score += documentationQueryWeight(token, sourceTerms) * idf * ((frequency * 2.2) / (frequency + 1.2 * (0.25 + 0.75 * (chunk.tokens.length / averageLength))));
     }
+    if (preferredRoots.includes(chunk.root)) score *= CONFIGURED_DOCUMENTATION_WEIGHT;
     if (isTableOfContents(chunk.text)) score *= 0.35;
     if (score > 0.8) scored.push({ ...chunk, score });
   }
@@ -312,7 +316,7 @@ function scoreChunks(chunks, query) {
   return hits;
 }
 
-export async function searchDocumentation({ repositoryRoot, query }) {
+export async function searchDocumentation({ repositoryRoot, query, sourceQuery = '' }) {
   const config = await getDocsConfig();
   const repoDirectories = await repositoryDocsDirectories(repositoryRoot);
   const directories = [...new Set([...config.directories, ...repoDirectories])];
@@ -320,7 +324,12 @@ export async function searchDocumentation({ repositoryRoot, query }) {
     return { hits: [], config, stats: { directories: 0, files: 0, chunks: 0, builtAt: null } };
   }
   const { chunks, stats } = await collectChunks(directories);
-  const hits = scoreChunks(chunks, query).map((hit) => ({
+  const unique = new Map();
+  for (const chunk of chunks) {
+    const key = `${chunk.source}\0${chunk.page}\0${chunk.text}`;
+    if (!unique.has(key)) unique.set(key, chunk);
+  }
+  const hits = scoreChunks([...unique.values()], query, sourceQuery, config.directories).map((hit) => ({
     source: `${path.basename(hit.root)}/${hit.rel}`,
     file: hit.source,
     root: hit.root,

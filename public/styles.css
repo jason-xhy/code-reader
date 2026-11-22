@@ -14,7 +14,7 @@
 
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-body { min-width: 940px; font-size: 13px; }
+body { min-width: 0; font-size: 13px; }
 button, input, textarea { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, .editor-host:focus-visible {
@@ -34,7 +34,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, .editor-host:
   overflow: clip;
 }
 /* 两侧栏改为悬停覆盖层：默认隐藏，鼠标移到边缘或面板上时滑入，
-   代码区宽度不因显隐重排（CodeMirror/xterm 不跟着 resize）。 */
+   可见面板预留空间，避免挡住代码和顶部控件。 */
 #app.insights-collapsed .insights,
 #app.insights-collapsed #splitter-right { display: none; }
 .splitter {
@@ -47,8 +47,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, .editor-host:
   background: transparent;
   cursor: col-resize;
 }
-#app.sidebar-visible #splitter-left { display: block; left: calc(var(--sidebar-width) - 3px); }
-#app.insights-visible #splitter-right { display: block; right: calc(var(--insights-width) - 3px); }
+#app.sidebar-visible #splitter-left { display: block; left: calc(min(var(--sidebar-width), 40vw) - 3px); }
+#app.insights-visible #splitter-right { display: block; right: calc(min(var(--insights-width), 40vw) - 3px); }
 .splitter::after {
   content: "";
   position: absolute;
@@ -849,12 +849,8 @@ input[readonly] { color: #8391a4; background: #111821; }
 #llm-save-progress { color: #8fb9e8; font-size: 11px; }
 
 @media (max-width: 1180px) {
-  #app { grid-template-columns: min(220px, var(--sidebar-width)) 6px minmax(330px, 1fr) 6px min(320px, var(--insights-width)); }
   .repository-heading { flex-wrap: wrap; row-gap: 4px; }
   .topbar { min-height: 72px; }
-}
-@media (max-width: 1180px) {
-  #app.insights-collapsed { grid-template-columns: min(220px, var(--sidebar-width)) 6px minmax(330px, 1fr) 0 0; }
 }
 
 .branch-select {
@@ -1285,3 +1281,24 @@ input[readonly] { color: #8391a4; background: #111821; }
 .animation-hint { color: var(--muted); font-size: 11px; flex: 1; }
 .animation-download { text-decoration: none; }
 .animation-frame { flex: 1; width: 100%; border: 0; background: #0b1020; }
+
+/* Visible panels reserve room so repository tabs and source stay readable. */
+#app.sidebar-visible .reader { margin-left: min(var(--sidebar-width), 40vw); }
+#app.insights-visible .reader { margin-right: min(var(--insights-width), 40vw); }
+.sidebar { max-width: 40vw; }
+.insights { max-width: 40vw; }
+
+/* Adapt the reader to its own remaining width, including pinned side panels. */
+.reader { container-type: inline-size; }
+@container (max-width: 600px) {
+  .topbar { flex-direction: column; align-items: stretch; gap: 6px; min-height: 0; padding: 8px; }
+  .file-heading { flex: 0 0 auto; }
+  .source-status { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .repository-heading { width: 100%; justify-content: flex-start; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 3px; }
+  .repository-heading > * { flex: 0 0 auto; }
+  .repository-heading strong { max-width: 80px; }
+  .editor-tabs { overflow-x: auto; flex: 0 0 auto; }
+  .editor-tabs > [role="tab"] { flex: 0 0 auto; white-space: nowrap; }
+  .editor-tabs-hint { display: none; }
+  .code-nav-bar { overflow-x: auto; flex: 0 0 auto; }
+}

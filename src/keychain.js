@@ -75,15 +75,21 @@ async function readMacosKey(providerId) {
   throw new AppError(result.stderr.trim() || `钥匙串命令退出码 ${result.code}`, 500, 'KEYCHAIN_ERROR');
 }
 
+// The password prompt truncates at 128 bytes. Interactive command mode accepts
+// the full -w value over stdin without exposing secrets in process arguments.
+function securityQuote(value) {
+  return '"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
+
 async function storeMacosKey(providerId, apiKey) {
-  // security 的 -w 不带值时从 stdin 读取密码，并要求输入两次确认。
-  const result = await runProcess(
-    'security',
-    ['add-generic-password', '-U', '-s', SERVICE, '-a', providerId, '-w'],
-    `${apiKey}\n${apiKey}\n`,
-  );
+  const command = ['add-generic-password', '-U', '-s', securityQuote(SERVICE), '-a', securityQuote(providerId), '-w', securityQuote(apiKey)].join(' ');
+  const result = await runProcess('security', ['-i'], `${command}\n`);
   if (result.code !== 0) {
-    throw new AppError(result.stderr.trim() || `钥匙串命令退出码 ${result.code}`, 500, 'KEYCHAIN_ERROR');
+    // Do not relay interactive output: some security versions echo the command.
+    throw new AppError('钥匙串写入失败', 500, 'KEYCHAIN_ERROR');
+  }
+  if (await readMacosKey(providerId) !== apiKey) {
+    throw new AppError('钥匙串写入后验证失败，Key 未完整保存', 500, 'KEYCHAIN_VERIFY_FAILED');
   }
 }
 

@@ -9,6 +9,8 @@ export function createLlmSettings({ api, onStatus }) {
     form: document.querySelector('#llm-form'),
     provider: document.querySelector('#llm-provider'),
     model: document.querySelector('#llm-model'),
+    refresh: document.querySelector('#llm-model-refresh'),
+    modelHelp: document.querySelector('#llm-model-help'),
     customModel: document.querySelector('#llm-custom-model'),
     baseUrl: document.querySelector('#llm-base-url'),
     apiKey: document.querySelector('#llm-api-key'),
@@ -22,6 +24,7 @@ export function createLlmSettings({ api, onStatus }) {
   };
   let config = null;
   let saving = false;
+  let refreshing = false;
 
   function provider() {
     return config?.providers.find((item) => item.id === elements.provider.value);
@@ -57,14 +60,22 @@ export function createLlmSettings({ api, onStatus }) {
   function renderProvider(preferredModel) {
     const currentProvider = provider();
     const isCustom = currentProvider?.id === 'custom';
+    elements.refresh.hidden = currentProvider?.id !== 'openai';
+    elements.modelHelp.hidden = currentProvider?.id !== 'openai';
     elements.baseUrl.value = isCustom ? config.baseUrl : currentProvider?.baseUrl || '';
     elements.baseUrl.readOnly = !isCustom;
+    elements.baseUrl.disabled = currentProvider?.id === 'chatgpt';
     elements.protocolField.hidden = !isCustom;
     elements.protocol.disabled = !isCustom;
     elements.protocol.value = isCustom ? (config.protocol === 'anthropic' ? 'anthropic' : 'openai') : 'openai';
     renderModels(preferredModel);
     elements.apiKey.value = '';
-    elements.keyHelp.textContent = '保存前会用该 Key 请求模型服务验证连通性；留空则保留钥匙串中已有 Key。';
+    elements.apiKey.closest('.llm-field').hidden = false;
+    elements.apiKey.hidden = currentProvider?.id === 'chatgpt';
+    elements.baseUrl.closest('.llm-field').hidden = currentProvider?.id === 'chatgpt';
+    elements.keyHelp.textContent = currentProvider?.id === 'chatgpt'
+      ? '复用本机 Codex 的 ChatGPT 登录，无需 API Key。未登录时请先运行 codex login。'
+      : '保存前会用该 Key 请求模型服务验证连通性；留空则保留钥匙串中已有 Key。';
   }
 
   function render() {
@@ -78,7 +89,11 @@ export function createLlmSettings({ api, onStatus }) {
     elements.provider.value = config.provider;
     renderProvider(config.model);
     elements.envWarning.hidden = !config.environmentOverride;
-    if (config.keyStored) {
+    if (config.provider === 'chatgpt') {
+      elements.keyHelp.closest('.llm-field').hidden = false;
+      elements.apiKey.hidden = true;
+      elements.keyHelp.textContent = config.loginMessage || '复用本机 Codex 的 ChatGPT 登录，无需 API Key';
+    } else if (config.keyStored) {
       elements.keyHelp.textContent = '当前厂商的 Key 已保存在钥匙串；留空保持不变，输入新 Key 则更新。';
     } else if (config.keySource === 'environment') {
       elements.keyHelp.textContent = '当前使用环境变量中的 API Key；在页面保存 Key 后仍由环境变量优先。';
@@ -123,7 +138,7 @@ export function createLlmSettings({ api, onStatus }) {
     elements.save.disabled = true;
     elements.close.disabled = true;
     elements.error.textContent = '';
-    elements.progress.textContent = '正在验证 Key 并保存到钥匙串…';
+    elements.progress.textContent = elements.provider.value === 'chatgpt' ? '正在检查 ChatGPT 登录并保存…' : '正在验证 Key 并保存到钥匙串…';
     try {
       const data = await api('/api/llm/config', {
         method: 'POST',
@@ -149,6 +164,26 @@ export function createLlmSettings({ api, onStatus }) {
     }
   }
 
+  elements.refresh.addEventListener('click', async () => {
+    if (refreshing) return;
+    refreshing = true;
+    const selected = elements.model.value === '__custom' ? elements.customModel.value : elements.model.value;
+    elements.refresh.setAttribute('aria-busy', 'true');
+    elements.refresh.textContent = '正在刷新模型…';
+    elements.error.textContent = '';
+    try {
+      const data = await api('/api/llm/models');
+      const openai = config.providers.find((item) => item.id === 'openai');
+      openai.models = data.models;
+      if (elements.provider.value === 'openai') renderModels(selected);
+      elements.modelHelp.textContent = `已从 OpenAI 获取 ${data.models.length} 个文本模型；实际调用仍受项目权限与额度限制。`;
+    } catch (error) { elements.error.textContent = error.message; }
+    finally {
+      refreshing = false;
+      elements.refresh.removeAttribute('aria-busy');
+      elements.refresh.textContent = '刷新 OpenAI 可用模型';
+    }
+  });
   elements.provider.addEventListener('change', () => renderProvider(''));
   elements.model.addEventListener('change', updateModelField);
   elements.form.addEventListener('submit', save);

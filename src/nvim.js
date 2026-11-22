@@ -3,6 +3,7 @@
 import path from 'node:path';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
+import { editorStatus } from './editor-env.js';
 import { getRepository } from './repositories.js';
 
 const MAX_INPUT_BYTES = 1024 * 1024;
@@ -46,8 +47,23 @@ export function attachNvim(server, { port }) {
     wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, url));
   });
 
-  wss.on('connection', (ws, url) => {
-    if (process.env.CODE_READER_EDITOR_DISABLED === '1') {
+  wss.on('connection', async (ws, url) => {
+    const pending = [];
+    let pendingBytes = 0;
+    const bufferInput = (raw) => {
+      pendingBytes += raw.length;
+      if (pendingBytes > MAX_INPUT_BYTES) ws.close(1009, '输入过大');
+      else pending.push(raw);
+    };
+    ws.on('message', bufferInput);
+    let status;
+    try { status = await editorStatus(); } catch {
+      if (ws.readyState === 1) { ws.send(JSON.stringify({ t: 'e', m: '无法检测本地编辑器环境，请打开编辑器环境重新检测' })); ws.close(1011, '编辑器检测失败'); }
+      return;
+    }
+    const active = status.active;
+    if (ws.readyState !== 1) return;
+    if (!status.available || process.env.CODE_READER_EDITOR_DISABLED === '1') {
       try {
         ws.send(JSON.stringify({ t: 'e', m: '未关联本地 vim/neovim 环境，已回退内置编辑器' }));
       } catch {
@@ -74,7 +90,7 @@ export function attachNvim(server, { port }) {
 
     let term;
     try {
-      term = pty.spawn(process.env.CODE_READER_NVIM || 'nvim', args, {
+      term = pty.spawn(active.command, args, {
         name: 'xterm-256color',
         cols: DEFAULT_COLS,
         rows: DEFAULT_ROWS,
@@ -83,14 +99,15 @@ export function attachNvim(server, { port }) {
       });
     } catch (error) {
       try {
-        ws.send(JSON.stringify({ t: 'e', m: `无法启动 nvim：${error.message}` }));
+        ws.send(JSON.stringify({ t: 'e', m: `无法启动 ${active.program}（${active.command}）：${error.message}` }));
       } catch {
         // 连接可能已关闭
       }
-      ws.close(1011, 'nvim 启动失败');
+      ws.close(1011, `${active.program} 启动失败`);
       return;
     }
 
+    ws.send(JSON.stringify({ t: 'ready', program: active.program }));
     term.onData((data) => {
       if (ws.readyState !== 1) return;
       ws.send(JSON.stringify({ t: 'd', d: data }));
@@ -106,7 +123,7 @@ export function attachNvim(server, { port }) {
       }
     });
 
-    ws.on('message', (raw) => {
+    const handleInput = (raw) => {
       let message;
       try {
         message = JSON.parse(raw.toString('utf8'));
@@ -126,7 +143,10 @@ export function attachNvim(server, { port }) {
           // 进程可能已退出
         }
       }
-    });
+    };
+    ws.removeListener('message', bufferInput);
+    ws.on('message', handleInput);
+    for (const raw of pending) handleInput(raw);
     const shutdown = () => {
       try {
         term.kill();

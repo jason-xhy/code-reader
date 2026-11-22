@@ -1,6 +1,6 @@
 // 能力：多仓库工作区（页签、会话快照、后台预载、刷新恢复）。
 import { elements } from '../core/dom.js';
-import { state, sessions, jumpStack, jumpForwardStack, editor } from '../core/state.js';
+import { state, sessions, jumpStack, jumpForwardStack, editor, getFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 import { showNotice } from '../core/notice.js';
 import { scheduleIdle } from '../core/utils.js';
@@ -19,6 +19,7 @@ import {
   renderHistory,
 } from './insights.js';
 import { openHistoryEntry } from './reading-history.js';
+import { renderReadingTrail } from './navigation.js';
 
 let deps = {};
 
@@ -90,6 +91,7 @@ export function captureSession() {
   if (!state.sessionKey) return null;
   const session = sessions.get(state.sessionKey);
   if (!session) return null;
+  session.readingTrail = state.readingTrail.map((entry) => ({ ...entry }));
   session.currentFile = state.currentFile;
   if (state.currentFile && state.source) session.cursor = editor.getCursor();
   session.activeLine = state.activeLine;
@@ -103,6 +105,7 @@ export function storeSession(key, data, prepared = null) {
   sessions.set(key, {
     key,
     data,
+    readingTrail: state.readingTrail.map((entry) => ({ ...entry })),
     currentFile: state.currentFile,
     cursor: state.currentFile && state.source ? editor.getCursor() : { line: 1, character: 0 },
     activeLine: state.activeLine,
@@ -120,6 +123,7 @@ async function applySession(session) {
   state.sessionKey = session.key;
   const prepared = preparedForSession(session);
   deps.applyRepositoryPayload(session.data, {
+    readingTrail: session.readingTrail || [],
     collapsed: session.collapsed,
     branches: session.branches || [],
     prepared,
@@ -202,6 +206,8 @@ export function activateWorkspaceByIndex(index) {
 export async function closeWorkspaceEntry(entry) {
   if (!entry || state.switching) return;
   state.switching = true;
+  const focusIntent = getFocusIntent();
+  const restoreTabFocus = Boolean(document.activeElement?.closest?.('.workspace-tab-close'));
   try {
     captureSession();
     const result = await api('/api/workspace/close', { method: 'POST', body: JSON.stringify({ key: entry.key }) });
@@ -210,6 +216,9 @@ export async function closeWorkspaceEntry(entry) {
     state.workspace = { entries: result.entries || [], activeKey: result.activeKey || null };
     if (!wasActive) {
       renderWorkspaceTabs();
+      if (restoreTabFocus && focusIntent === getFocusIntent() && document.activeElement === document.body) {
+        elements.workspaceTabs.querySelector('.workspace-tab.active .workspace-tab-name')?.focus({ preventScroll: true });
+      }
       return;
     }
     state.sessionKey = null;
@@ -247,6 +256,8 @@ export function clearWorkspaceView() {
   state.historyCache.clear();
   state.lsp = { available: false, engine: null, initialized: false, detail: '' };
   state.sessionKey = null;
+  state.readingTrail = [];
+  renderReadingTrail();
   jumpStack.length = 0;
   jumpForwardStack.length = 0;
   closeQuestion();

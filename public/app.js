@@ -119,6 +119,7 @@ async function selectFile(filePath, reveal = null, { focus = 'always' } = {}) {
   // 说明「最新意图」已经不在代码窗，迟到的内容不得把焦点抢回去。
   const intent = getFocusIntent();
   if (!state.repository || (state.currentFile === filePath && !reveal)) return;
+  const repository = state.repository;
   const switching = state.currentFile !== filePath;
   state.currentFile = filePath;
   if (switching) {
@@ -148,7 +149,7 @@ async function selectFile(filePath, reveal = null, { focus = 'always' } = {}) {
   elements.sourceStatus.textContent = '正在读取源码…';
   try {
     const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/file?path=${encodeURIComponent(filePath)}`);
-    if (state.currentFile !== filePath) return;
+    if (state.repository !== repository || state.currentFile !== filePath) return;
     state.source = data;
     const canFocus = intent === getFocusIntent();
     renderSource({ focus: !background && canFocus });
@@ -162,7 +163,7 @@ async function selectFile(filePath, reveal = null, { focus = 'always' } = {}) {
     fetchFaq(line);
     scheduleHistoryTouch();
   } catch (error) {
-    if (state.currentFile !== filePath) return;
+    if (state.repository !== repository || state.currentFile !== filePath) return;
     editor.hide();
     elements.codeEmpty.hidden = false;
     elements.codeEmpty.querySelector('h1').textContent = '无法读取文件';
@@ -171,10 +172,12 @@ async function selectFile(filePath, reveal = null, { focus = 'always' } = {}) {
   }
 }
 
-function applyRepositoryPayload(data, { collapsed = null, branches = [], prepared = null } = {}) {
+function applyRepositoryPayload(data, { collapsed = null, branches = [], prepared = null, readingTrail = [] } = {}) {
   // 切仓/重新打开时关闭遗留的搜索或引用列表，避免旧仓库结果在新仓库里跳转。
   if (editor?.isQuickpickOpen()) editor.closeQuickpick();
   state.repository = data.repository;
+  state.readingTrail = readingTrail.map((entry) => ({ ...entry }));
+  renderReadingTrail();
   state.files = data.files;
   state.filesLower = prepared?.filesLower || data.files.map((filePath) => filePath.toLowerCase());
   state.fileSet = prepared?.fileSet || new Set(data.files);
@@ -217,6 +220,7 @@ function applyRepositoryPayload(data, { collapsed = null, branches = [], prepare
 
 async function loadRepository(data, { preserveFile = false, stashNotice = true } = {}) {
   const previousFile = preserveFile ? state.currentFile : null;
+  const previousTrail = preserveFile ? state.readingTrail : [];
   // 打开/切换仓库前先保存当前仓库的阅读位置，供工作区页签切回。
   captureSession();
   closeNvim();
@@ -231,7 +235,7 @@ async function loadRepository(data, { preserveFile = false, stashNotice = true }
     renderWorkspaceTabs();
   }
   const prepared = preparePayload(data);
-  applyRepositoryPayload(data, { prepared });
+  applyRepositoryPayload(data, { prepared, readingTrail: previousTrail });
   await loadBranches();
   if (previousFile && state.files.includes(previousFile)) {
     await selectFile(previousFile);

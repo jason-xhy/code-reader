@@ -4,6 +4,7 @@ import { elements } from './dom.js';
 import { state } from './state.js';
 import { LAYOUT_KEY, PANEL_HIDE_DELAY } from './config.js';
 import { clamp } from './utils.js';
+import { readableShell } from './theme-policy.js';
 
 export function loadLayout() {
   try {
@@ -231,14 +232,15 @@ export function initAutoPanels({ focus = {} } = {}) {
 
 export function applyShellTheme(palette) {
   if (!palette) return;
+  const shell = palette.id === 'local' ? readableShell(palette.shell, THEMES[0].shell) : palette.shell;
   const root = document.documentElement.style;
-  root.setProperty('--panel', palette.shell.panel);
-  root.setProperty('--panel-deep', palette.shell.background);
-  root.setProperty('--border', palette.shell.border);
-  root.setProperty('--accent', palette.shell.accent);
-  root.setProperty('--muted', palette.shell.muted);
-  document.body.style.background = palette.shell.background;
-  document.body.style.color = palette.shell.text;
+  root.setProperty('--panel', shell.panel);
+  root.setProperty('--panel-deep', shell.background);
+  root.setProperty('--border', shell.border);
+  root.setProperty('--accent', shell.accent);
+  root.setProperty('--muted', shell.muted);
+  document.body.style.background = shell.background;
+  document.body.style.color = shell.text;
 }
 
 // 字体同步：配色由本地 nvim 高亮生成后，字体也要跟本地终端一致。
@@ -278,7 +280,8 @@ export function populateThemes() {
   }
   elements.themeSelect.value = state.theme;
   if (!elements.themeSelect.value) {
-    state.theme = 'one-dark';
-    elements.themeSelect.value = state.theme;
+    // Profile loading is asynchronous; retain an explicit local preference until resolved.
+    if (!(state.theme === 'local' && !state.editorProfile)) state.theme = 'one-dark';
+    elements.themeSelect.value = 'one-dark';
   }
 }

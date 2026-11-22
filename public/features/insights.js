@@ -1,7 +1,8 @@
 // 能力：分析与解释面板（函数历史、FAQ、提交详情、提问、解释与 3D 动画）。
 import { createAnimationHtml } from '../animation-html.js';
+import { animationCommandForKey } from '../core/animation-keys.js';
 import { elements } from '../core/dom.js';
-import { state, editor, noteFocusIntent } from '../core/state.js';
+import { state, editor, noteFocusIntent, getFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 import { showNotice } from '../core/notice.js';
 import { ANIMATION_HINT_RE, QUESTION_PRESETS } from '../core/config.js';
@@ -89,6 +90,12 @@ export function initInsightsFeature(dependencies) {
     if (event.data?.type === 'code-reader-animation-close') closeAnimation();
   });
   elements.animationOverlay.addEventListener('keydown', (event) => {
+    const command = animationCommandForKey(event.key);
+    if (state.animationOpen && command && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      elements.animationFrame.contentWindow?.postMessage({ type: 'code-reader-animation-command', command }, '*');
+      return;
+    }
     if (event.key !== 'Tab') return;
     const focusable = [...elements.animationOverlay.querySelectorAll('a[href], button, iframe, [tabindex="0"]')]
       .filter((element) => element.offsetParent !== null);
@@ -268,6 +275,7 @@ export async function fetchFaq(line) {
     renderFaq();
     return;
   }
+  const repository = state.repository;
   const filePath = state.currentFile;
   state.faqController?.abort();
   const controller = new AbortController();
@@ -277,11 +285,11 @@ export async function fetchFaq(line) {
       `/api/repositories/${encodeURIComponent(state.repository.id)}/faq?path=${encodeURIComponent(filePath)}&line=${line}`,
       { signal: controller.signal },
     );
-    if (state.currentFile !== filePath || controller.signal.aborted) return;
+    if (state.repository !== repository || state.currentFile !== filePath || state.faqController !== controller || controller.signal.aborted) return;
     state.faqEntries = data.entries || [];
     state.faqKey = `${filePath}:${line}`;
   } catch (error) {
-    if (error.name === 'AbortError' || state.currentFile !== filePath) return;
+    if (error.name === 'AbortError' || state.repository !== repository || state.currentFile !== filePath || state.faqController !== controller) return;
     state.faqEntries = [];
   }
   renderFaq();
@@ -348,6 +356,13 @@ export function renderFaq() {
     }
     const actions = document.createElement('div');
     actions.className = 'faq-actions';
+    if (Array.isArray(entry.animation?.nodes) && Array.isArray(entry.animation?.steps)) {
+      const replay = document.createElement('button');
+      replay.type = 'button';
+      replay.textContent = '查看已保存的 3D 动画';
+      replay.addEventListener('click', () => openAnimation(entry.animation, replay));
+      actions.append(replay);
+    }
     if (entry.stale) {
       const reask = document.createElement('button');
       reask.type = 'button';
@@ -365,12 +380,21 @@ export function renderFaq() {
     remove.className = 'faq-delete';
     remove.textContent = '删除此 FAQ';
     remove.addEventListener('click', async () => {
+      const intent = getFocusIntent();
+      const repository = state.repository;
+      const file = state.currentFile;
       try {
         await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/faq/delete`, {
           method: 'POST',
           body: JSON.stringify({ id: entry.id }),
         });
-        fetchFaq(state.activeLine || entry.line);
+        if (state.repository !== repository || state.currentFile !== file) return;
+        await fetchFaq(state.activeLine || entry.line);
+        if (state.repository === repository && state.currentFile === file && intent === getFocusIntent()) {
+          const next = elements.faqContent.querySelector('.faq-question');
+          if (next) next.focus({ preventScroll: true });
+          else focusExplanationPanel();
+        }
       } catch (error) {
         showNotice(`删除 FAQ 失败：${error.message}`, { error: true });
       }
@@ -589,6 +613,7 @@ async function fetchFunctionHistoryDeep(line) {
 }
 
 // ---- 提问 ----
+let questionRequest = null;
 
 export function openQuestion() {
   if (!state.source || state.explaining) return;
@@ -607,8 +632,18 @@ export function openQuestion() {
 }
 
 export function closeQuestion() {
+  if (questionRequest) {
+    questionRequest.abort();
+    questionRequest = null;
+    if (state.explanation?.status === 'loading') state.explanation = null;
+    renderExplanation();
+  }
   state.questionOpen = false;
   state.explaining = false;
+  elements.questionInput.disabled = false;
+  elements.questionSubmit.disabled = false;
+  elements.questionCancel.disabled = false;
+  elements.questionSubmit.textContent = '确定';
   elements.questionEditor.hidden = true;
   elements.questionError.textContent = '';
   elements.questionInput.value = '';
@@ -624,11 +659,13 @@ async function submitQuestion() {
   }
   const filePath = state.currentFile;
   const line = state.activeLine;
-  const wantsAnimation = Boolean(elements.questionAnimation?.checked);
+  const wantsAnimation = Boolean(elements.questionAnimation?.checked) || ANIMATION_HINT_RE.test(question);
   state.explaining = true;
   elements.questionInput.disabled = true;
   elements.questionSubmit.disabled = true;
-  elements.questionCancel.disabled = true;
+  elements.questionCancel.disabled = false;
+  const controller = new AbortController();
+  questionRequest = controller;
   elements.questionSubmit.textContent = wantsAnimation ? '正在生成文字与 3D 动画…' : '正在解释…';
   elements.questionError.textContent = '';
   state.explanation = { status: 'loading', path: filePath, line, animationRequested: wantsAnimation };
@@ -641,16 +678,22 @@ async function submitQuestion() {
   try {
     const data = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/explain`, {
       method: 'POST',
+      signal: controller.signal,
       body: JSON.stringify({ path: filePath, line, question, animate: wantsAnimation }),
     });
+    if (questionRequest !== controller) return;
+    questionRequest = null;
     state.explanation = { status: 'done', path: filePath, line, ...data };
     closeQuestion();
     fetchFaq(line);
   } catch (error) {
+    if (controller.signal.aborted || questionRequest !== controller) return;
+    questionRequest = null;
     state.explanation = { status: 'error', path: filePath, line, message: error.message, details: error.details };
     elements.questionError.textContent = error.message;
   } finally {
     document.removeEventListener('focusin', markFocusMoved, true);
+    if (controller.signal.aborted || (questionRequest && questionRequest !== controller)) return;
     state.explaining = false;
     elements.questionInput.disabled = false;
     elements.questionSubmit.disabled = false;
@@ -674,6 +717,7 @@ export function renderQuestionPresets() {
     button.title = preset.text;
     button.addEventListener('click', () => {
       elements.questionInput.value = preset.text;
+      if (ANIMATION_HINT_RE.test(preset.text)) elements.questionAnimation.checked = true;
       elements.questionInput.focus();
     });
     elements.questionPresets.append(button);

@@ -352,13 +352,15 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     }
   }
   Vim.defineAction('readerJumpBack', () => {
-    const handled = typeof onJumpBack === 'function' && onJumpBack();
-    if (!handled) runVimJump('<C-o>', 'readerJumpBack');
+    Promise.resolve(typeof onJumpBack === 'function' && onJumpBack()).then((handled) => {
+      if (!handled) runVimJump('<C-o>', 'readerJumpBack');
+    }).catch((error) => { document.getElementById('source-status').textContent = `跳回失败：${error.message}`; });
   });
   Vim.mapCommand('<C-o>', 'action', 'readerJumpBack', undefined, { context: 'normal' });
   Vim.defineAction('readerJumpForward', () => {
-    const handled = typeof onJumpForward === 'function' && onJumpForward();
-    if (!handled) runVimJump('<C-i>', 'readerJumpForward');
+    Promise.resolve(typeof onJumpForward === 'function' && onJumpForward()).then((handled) => {
+      if (!handled) runVimJump('<C-i>', 'readerJumpForward');
+    }).catch((error) => { document.getElementById('source-status').textContent = `前进失败：${error.message}`; });
   });
   Vim.mapCommand('<C-i>', 'action', 'readerJumpForward', undefined, { context: 'normal' });
 
@@ -425,6 +427,14 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   }, true);
 
   const appKeymap = Prec.highest(keymap.of([
+    ...['o', 'i'].map((key) => ({
+      key: `Ctrl-${key}`,
+      run: () => {
+        if (vimTypingMode(view)) return false;
+        Vim.handleKey(getCM(view), `<C-${key}>`, 'normal');
+        return true;
+      },
+    })),
     {
       key: 'Ctrl-]',
       run: () => {

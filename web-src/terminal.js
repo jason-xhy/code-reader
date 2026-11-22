@@ -163,7 +163,7 @@ function connect({ repositoryId, file, line }) {
   }
   socket = new WebSocket(`${scheme}://${location.host}/nvim?${params.toString()}`);
   socket.onopen = () => {
-    setStatus(file ? `nvim · ${file}` : 'nvim');
+    setStatus(file ? `本地编辑器 · ${file}` : '本地编辑器');
     fitNow();
     term?.focus();
   };
@@ -174,17 +174,18 @@ function connect({ repositoryId, file, line }) {
     } catch {
       return;
     }
+    if (message.t === 'ready') { setStatus(`${message.program} · ${file || '本地编辑器'}`); return; }
     if (message.t === 'd') {
       term?.write(message.d);
       return;
     }
     if (message.t === 'x') {
-      setStatus(`nvim 已退出（${message.code}）`);
+      setStatus(`本地编辑器已退出（${message.code}）`);
       return;
     }
     if (message.t === 'e') {
-      setStatus(message.m || 'nvim 启动失败');
-      term?.write(`\r\n\x1b[31m${message.m || 'nvim 启动失败'}\x1b[0m\r\n`);
+      setStatus(message.m || '本地编辑器启动失败');
+      term?.write(`\r\n\x1b[31m${message.m || '本地编辑器启动失败'}\x1b[0m\r\n`);
     }
   };
   socket.onclose = () => {
@@ -207,7 +208,7 @@ function open(options) {
   }
   disconnect();
   session = { repositoryId: options.repositoryId };
-  setStatus('正在启动 nvim…');
+  setStatus('正在启动本地编辑器…');
   connect(options);
 }
 

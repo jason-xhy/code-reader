@@ -68,8 +68,8 @@
       </div>
       <div class="editor-tabs" role="tablist" aria-label="编辑模式">
         <button id="tab-editor" class="editor-tab active" type="button" role="tab" aria-selected="true" title="内置编辑器（Ctrl+Alt+1）">编辑器<span class="editor-tab-key">Ctrl+Alt+1</span></button>
-        <button id="tab-nvim" class="editor-tab" type="button" role="tab" aria-selected="false" title="在浏览器内运行本地 nvim（真实插件与键位）· Ctrl+Alt+2">nvim<span class="editor-tab-key">Ctrl+Alt+2</span></button>
-        <span class="editor-tabs-hint" id="editor-tabs-hint">nvim 为真实本地进程：<kbd>:w</kbd> 会写盘，插件与 LSP 使用你的本地配置</span>
+        <button id="tab-nvim" class="editor-tab" type="button" role="tab" aria-selected="false" title="在浏览器内运行本地 vim/neovim（真实插件与键位）· Ctrl+Alt+2">本地 Vim<span class="editor-tab-key">Ctrl+Alt+2</span></button>
+        <span class="editor-tabs-hint" id="editor-tabs-hint">本地编辑器为真实进程：<kbd>:w</kbd> 会写盘，插件与 LSP 使用你的本地配置</span>
       </div>
 <nav id="reading-trail" class="reading-trail" aria-label="阅读路径" hidden></nav>
       <div id="code-nav-bar" class="code-nav-bar" aria-label="代码窗口导航提示">
@@ -143,9 +143,9 @@
             <span id="nvim-panel-hints" class="nvim-panel-hints" title="焦点在面板内时再按一次收起；K 标签跳转 / F 两字符定位">Ctrl+Alt+B 树 · Ctrl+Alt+I 分析 · K 跳转 · F 定位</span>
             <span class="nvim-bar-spacer"></span>
             <button id="nvim-keys" class="statusbar-button" type="button" title="查看本地配置中实际生效的按键映射">本地快捷键</button>
-            <button id="nvim-open-current" class="button small" type="button" title="在 nvim 中打开 Web 端当前文件与行">打开当前文件</button>
-            <button id="nvim-restart" class="button small" type="button" title="结束并重新启动 nvim">重启</button>
-            <button id="nvim-close" class="button small" type="button" title="关闭 nvim 面板">关闭</button>
+            <button id="nvim-open-current" class="button small" type="button" title="在本地编辑器中打开 Web 端当前文件与行">打开当前文件</button>
+            <button id="nvim-restart" class="button small" type="button" title="结束并重新启动本地编辑器">重启</button>
+            <button id="nvim-close" class="button small" type="button" title="关闭本地编辑器面板">关闭</button>
           </div>
           <div id="nvim-term" class="nvim-term"></div>
         </div>
@@ -248,6 +248,8 @@
       <div class="llm-field">
         <label for="llm-model">模型</label>
         <select id="llm-model" required></select>
+        <button id="llm-model-refresh" class="button small" type="button" hidden>刷新 OpenAI 可用模型</button>
+        <p id="llm-model-help" class="field-help" hidden>按已保存 Key 从 OpenAI 获取文本模型；返回可见不代表当前项目一定有调用额度。</p>
         <input id="llm-custom-model" type="text" placeholder="输入模型 ID" maxlength="200" spellcheck="false" hidden>
       </div>
       <div class="llm-field">

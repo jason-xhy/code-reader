@@ -1,3 +1,4 @@
+import { modelFetch as fetch } from './http/model-fetch.js';
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 与 code-reader 的配置字段与协议实现强绑定
 // grill: 成品检索=skill 库无该应用 LLM 配置成品; 输入固定=固定表单字段与固定 API 路径; 步骤机械=按 openai/anthropic 协议分支; 判读固定=按 HTTP 状态与响应结构判定; 失效场景=构造不出（仅本应用）
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -5,64 +6,10 @@ import path from 'node:path';
 import { AppError } from './errors.js';
 import { readApiKey, storeApiKey } from './keychain.js';
 import { dataPath } from './paths.js';
+import { chatgptStatus } from './chatgpt.js';
 
-export const LLM_PROVIDERS = [
-  {
-    id: 'kimi', name: 'Kimi（月之暗面）', baseUrl: 'https://api.moonshot.cn/v1',
-    models: [
-      { id: 'kimi-k3.1-pro', name: 'Kimi K3.1 Pro' },
-      { id: 'kimi-k3.1-pro-highspeed', name: 'Kimi K3.1 Pro Highspeed' },
-      { id: 'kimi-k3', name: 'Kimi K3' },
-    ],
-  },
-  {
-    id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1',
-    models: [
-      { id: 'gpt-5.5', name: 'GPT-5.5' },
-      { id: 'gpt-5.5-pro', name: 'GPT-5.5 Pro' },
-      { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
-    ],
-  },
-  {
-    id: 'anthropic', name: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1',
-    models: [
-      { id: 'claude-opus-4-7', name: 'Claude Opus 4.7' },
-      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
-    ],
-  },
-  {
-    id: 'google', name: 'Google', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    models: [
-      { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview' },
-    ],
-  },
-  {
-    id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1',
-    models: [
-      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
-      { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
-    ],
-  },
-  {
-    id: 'qwen', name: '通义千问（阿里云百炼）', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    models: [
-      { id: 'qwen4-max', name: 'Qwen4 Max' },
-      { id: 'qwen3.8-max', name: 'Qwen3.8 Max' },
-      { id: 'qwen3.8-flash', name: 'Qwen3.8 Flash' },
-    ],
-  },
-  {
-    id: 'glm', name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    models: [
-      { id: 'glm-5.3', name: 'GLM-5.3' },
-      { id: 'glm-5.2', name: 'GLM-5.2' },
-      { id: 'glm-5.1', name: 'GLM-5.1' },
-    ],
-  },
-  {
-    id: 'custom', name: '自定义兼容服务', baseUrl: '', models: [],
-  },
-];
+import { LLM_PROVIDERS } from './llm/providers.js';
+export { LLM_PROVIDERS };
 
 const configPath = dataPath('llm-config.json');
 
@@ -76,7 +23,7 @@ export function anthropicMessagesUrl(baseUrl) {
   return trimmed.endsWith('/v1') ? `${trimmed}/messages` : `${trimmed}/v1/messages`;
 }
 
-let selection = { provider: 'kimi', model: 'kimi-k3.1-pro', baseUrl: LLM_PROVIDERS[0].baseUrl, protocol: 'openai' };
+let selection = { provider: 'kimi', model: 'kimi-k3.1-pro', baseUrl: 'https://api.moonshot.cn/v1', protocol: 'openai' };
 
 try {
   const saved = JSON.parse(await readFile(configPath, 'utf8'));
@@ -161,6 +108,11 @@ function validateBaseUrl(value) {
 
 export async function resolveLlmConfig() {
   const provider = getProvider(selection.provider) || LLM_PROVIDERS[0];
+  if (provider.id === 'chatgpt') {
+    const login = await chatgptStatus();
+    return { provider: provider.id, providerName: provider.name, model: selection.model, baseUrl: provider.baseUrl,
+      protocol: 'chatgpt', configured: login.available, keyStored: false, keySource: 'chatgpt', environmentOverride: false, loginMessage: login.message };
+  }
   const environmentOverride = Boolean(process.env.LLM_API_KEY || process.env.LLM_MODEL || process.env.LLM_BASE_URL);
   const model = process.env.LLM_MODEL || selection.model;
   const baseUrl = process.env.LLM_BASE_URL || (process.env.LLM_MODEL ? 'https://api.openai.com/v1' : selection.baseUrl);
@@ -193,6 +145,7 @@ export async function llmStatus() {
     keyStored: config.keyStored,
     keySource: config.keySource,
     environmentOverride: config.environmentOverride,
+    loginMessage: config.loginMessage,
     providers: LLM_PROVIDERS,
   };
 }
@@ -203,10 +156,16 @@ export async function saveLlmConfig(body) {
   const model = validateModel(body.model);
   const baseUrl = provider.id === 'custom' ? validateBaseUrl(body.baseUrl) : provider.baseUrl;
   const protocol = provider.id === 'custom' ? normalizeProtocol(body.protocol) : 'openai';
-  if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+  if (provider.id === 'chatgpt') {
+    const login = await chatgptStatus();
+    if (!login.available) throw new AppError(login.message, 400, 'CHATGPT_NOT_LOGGED_IN');
+  } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
     const apiKey = body.apiKey.trim();
     await validateApiKey(baseUrl, apiKey, protocol, model);
     await storeApiKey(provider.id, apiKey);
+  }
+  if (provider.id !== 'chatgpt' && !body.apiKey?.trim() && !process.env.LLM_API_KEY && !await readApiKey(provider.id)) {
+    throw new AppError('当前厂商尚未配置 API Key，请输入 Key 后保存；ChatGPT 登录可选择 ChatGPT 厂商', 400, 'LLM_NOT_CONFIGURED');
   }
   selection = { provider: provider.id, model, baseUrl, protocol };
   await mkdir(path.dirname(configPath), { recursive: true });

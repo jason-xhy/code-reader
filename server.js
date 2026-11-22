@@ -45,6 +45,8 @@ const server = http.createServer(async (request, response) => {
       throw new AppError('请求方法不支持', 405, 'METHOD_NOT_ALLOWED');
     }
   } catch (error) {
+    // A disconnected client has no response channel; cancellation is expected.
+    if (response.destroyed) return;
     const status = error instanceof AppError ? error.status : 500;
     const code = error instanceof AppError ? error.code : 'INTERNAL_ERROR';
     const message = error instanceof AppError ? error.message : '服务器内部错误';

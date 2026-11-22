@@ -1,3 +1,4 @@
+import { animationCommandForKey } from '../public/core/animation-keys.js';
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 动画运行时与 parseAnimation 输出结构强绑定
 // grill: 成品检索=skill 库无 code-reader 动画运行时成品; 输入固定=受限动画 JSON; 步骤机械=确定性布局+步骤时间轴; 判读固定=挂载成功/降级; 失效场景=构造不出（仅本应用）
 import * as THREE from 'three';
@@ -209,6 +210,16 @@ export function mountAnimation(root, data) {
   renderOnce(state);
 
   controls.addEventListener('change', () => renderOnce(state));
+  const runKeyboardCommand = (command) => {
+    if (command === 'previous') state.stepBy(-1);
+    else if (command === 'next') state.stepBy(1);
+    else if (command === 'toggle') state.togglePlay();
+  };
+  window.addEventListener('message', (event) => {
+    if (event.source === window.parent && event.data?.type === 'code-reader-animation-command') {
+      runKeyboardCommand(event.data.command);
+    }
+  });
   window.addEventListener('keydown', (event) => {
     if (event.target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName)) return;
     if (event.key === 'Escape') {
@@ -217,9 +228,8 @@ export function mountAnimation(root, data) {
       window.parent?.postMessage({ type: 'code-reader-animation-close' }, '*');
       return;
     }
-    if (event.key === 'ArrowLeft') { state.stepBy(-1); event.preventDefault(); }
-    if (event.key === 'ArrowRight') { state.stepBy(1); event.preventDefault(); }
-    if (event.key === ' ') { state.togglePlay(); event.preventDefault(); }
+    const command = animationCommandForKey(event.key);
+    if (command) { runKeyboardCommand(command); event.preventDefault(); }
   });
 
   window.__SCENE_READY__ = true;

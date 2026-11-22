@@ -155,6 +155,7 @@ export async function listSourceFiles(root) {
 }
 
 export async function readSource(root, filePath) {
+  root = await realpath(root);
   validateRelativePath(filePath);
   const listing = await runGit(['ls-files', '-coz', '--exclude-standard', '--', filePath], { cwd: root });
   if (!listing.split('\0').filter(Boolean).includes(filePath)) {

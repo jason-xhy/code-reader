@@ -1,5 +1,8 @@
+import { modelFetch as fetch } from './http/model-fetch.js';
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 与 code-reader 的 LLM 调用实现强绑定
 // grill: 成品检索=skill 库无该应用 LLM 调用成品; 输入固定=固化的源码上下文与问题 JSON; 步骤机械=按 protocol 组装请求并解析; 判读固定=按 choices/content 结构解析; 失效场景=构造不出（仅本应用）
+import { COMPLETION_TIMEOUT_MS } from './policies/llm.js';
+import { requestChatgpt } from './chatgpt.js';
 import { AppError } from './errors.js';
 import { anthropicMessagesUrl, resolveLlmConfig } from './llm-config.js';
 import { searchDocumentation } from './docs.js';
@@ -170,7 +173,9 @@ function anthropicResponseInfo(completion) {
   };
 }
 
-async function requestCompletion(config, messages, systemPrompt = SYSTEM_PROMPT) {
+async function requestCompletion(config, messages, systemPrompt = SYSTEM_PROMPT, signal) {
+  signal?.throwIfAborted();
+  if (config.protocol === 'chatgpt') return requestChatgpt(config.model, messages, systemPrompt, signal);
   const anthropic = config.protocol === 'anthropic';
   const url = anthropic ? anthropicMessagesUrl(config.baseUrl) : `${config.baseUrl}/chat/completions`;
   const requestBody = anthropic
@@ -197,7 +202,7 @@ async function requestCompletion(config, messages, systemPrompt = SYSTEM_PROMPT)
     body: truncateDiagnostic(requestBody),
   };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90_000);
+  const timer = setTimeout(() => controller.abort(), COMPLETION_TIMEOUT_MS);
   let response;
   try {
     response = await fetch(url, {
@@ -213,16 +218,17 @@ async function requestCompletion(config, messages, systemPrompt = SYSTEM_PROMPT)
             authorization: `Bearer ${config.apiKey}`,
           },
       body: JSON.stringify(requestBody),
-      signal: controller.signal,
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
     });
   } catch (error) {
+    clearTimeout(timer);
+    if (signal?.aborted) throw error;
     const message = error.name === 'AbortError' ? 'LLM 请求超时' : `无法连接 LLM：${error.message}`;
     throw new AppError(message, 502, 'LLM_NETWORK_ERROR', { request, error: message });
-  } finally {
-    clearTimeout(timer);
   }
 
-  const rawBody = await response.text();
+  let rawBody;
+  try { rawBody = await response.text(); } finally { clearTimeout(timer); }
   const responseInfo = { status: response.status, body: truncateDiagnostic(rawBody) };
   if (!response.ok) {
     throw new AppError(`LLM 服务返回 HTTP ${response.status}：${rawBody.slice(0, 500)}`, 502, 'LLM_HTTP_ERROR', { request, response: responseInfo });
@@ -263,6 +269,7 @@ export async function explainSource(source, filePath, line, question, options = 
   if (typeof question !== 'string' || !question.trim() || question.length > MAX_QUESTION_LENGTH) {
     throw new AppError(`问题不能为空且不能超过 ${MAX_QUESTION_LENGTH} 字`, 400, 'INVALID_QUESTION');
   }
+  options.signal?.throwIfAborted();
   const config = await resolveLlmConfig();
   if (!config.configured) {
     throw new AppError('LLM 未配置，请点击左下角“LLM 设置”选择模型并保存 API Key', 503, 'LLM_NOT_CONFIGURED');
@@ -280,6 +287,7 @@ const animationRequested = options.animate === true || wantsAnimation(question);
   try {
     documentation = await searchDocumentation({
       repositoryRoot: options.repositoryRoot,
+      sourceQuery: `${filePath} ${context.scope.symbol || ''}`,
       query: [question, filePath, context.scope.symbol, context.queryText, currentLine, currentLine.replace(/_+/g, ' ')].join(' '),
     });
   } catch (error) {
@@ -319,7 +327,7 @@ const animationRequested = options.animate === true || wantsAnimation(question);
     ...(webResults.length ? { webSearch: webResults } : {}),
   });
   const messages = [{ role: 'user', content: userContent }];
-  const first = await requestCompletion(config, messages, systemPrompt);
+  const first = await requestCompletion(config, messages, systemPrompt, options.signal);
   let explanation;
   try {
     explanation = parseExplanation(first.content, animationRequested);
@@ -335,7 +343,7 @@ const animationRequested = options.animate === true || wantsAnimation(question);
       ...messages,
       { role: 'assistant', content: first.content },
       { role: 'user', content: '上面的回答不符合要求。请严格按系统提示的结构重新回答，只输出一个 JSON 对象，不要输出 Markdown 代码围栏或任何额外说明。' },
-    ], systemPrompt);
+    ], systemPrompt, options.signal);
     try {
       explanation = parseExplanation(retry.content, animationRequested);
     } catch (retryError) {
