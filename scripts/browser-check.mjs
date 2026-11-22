@@ -165,6 +165,9 @@ try {
 
   await waitReady();
   await evaluate('window.__readyAt = performance.now(); true');
+  // 在交互/动画验收前单独测量预载，避免把后续测试主动制造的工作算作预载。
+  await sleep(3000);
+  await evaluate('window.__preloadEnd = performance.now(); true');
   const initial = await snapshot();
   // 同一实例可能正被用户在另一个窗口使用（阅读位置随时会变）：开始时与页面
   // 就绪后各取一次历史，页面匹配任一即可；滤波用例结束后回写页面起始位置。
@@ -1199,12 +1202,12 @@ try {
     return true;
   })()`);
   await evaluate("document.querySelector('.cm-content').focus(); true");
-  await evaluate(`(() => { window.__ts.openFile(${JSON.stringify(raceTarget)}); return true; })()`);
+  await evaluate(`(() => { window.__raceLoad = window.__ts.openFile(${JSON.stringify(raceTarget)}); return true; })()`);
   await sleep(60);
   await pressRealKey('i', 'KeyI', 73, 3);
   await sleep(180);
   const raceInsightsEarly = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('insights-visible'), inInsights: Boolean(document.activeElement?.closest?.('.insights')) })");
-  await sleep(1200);
+  await evaluate('window.__raceLoad');
   const raceCursorBeforeJ = await evaluate('window.__ts.snapshot().editor.cursor.line');
   const raceInsightsLate = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('insights-visible'), inInsights: Boolean(document.activeElement?.closest?.('.insights')), inEditor: Boolean(document.activeElement?.closest?.('#editor-host')) })");
   await pressRealKey('j', 'KeyJ', 74);
@@ -1221,12 +1224,12 @@ try {
 
   await evaluate("window.__crPanels?.hideAll(); document.querySelector('.cm-content').focus(); true");
   await sleep(400);
-  await evaluate(`(() => { window.__ts.openFile(${JSON.stringify(raceTarget2)}); return true; })()`);
+  await evaluate(`(() => { window.__raceLoad = window.__ts.openFile(${JSON.stringify(raceTarget2)}); return true; })()`);
   await sleep(60);
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 360, buttons: 0 });
   await sleep(250);
   const raceTreeEarly = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('sidebar-visible'), inTree: Boolean(document.activeElement?.closest?.('#file-tree')) })");
-  await sleep(1100);
+  await evaluate('window.__raceLoad');
   const raceTreeCursor = await evaluate('window.__ts.snapshot().editor.cursor.line');
   const raceTreeLate = await evaluateJson("JSON.stringify({ visible: document.querySelector('#app').classList.contains('sidebar-visible'), inTree: Boolean(document.activeElement?.closest?.('#file-tree')), inEditor: Boolean(document.activeElement?.closest?.('#editor-host')) })");
   const raceTreeIndexBefore = await evaluate("[...document.querySelectorAll('#file-tree .tree-row')].findIndex((row) => row.classList.contains('key-focus'))");
@@ -1286,7 +1289,8 @@ try {
   await sleep(3000);
   const longTasks = await evaluateJson('JSON.stringify(window.__longTasks || [])');
   const readyAt = await evaluate('window.__readyAt || 0');
-  const blocking = longTasks.filter((task) => task.start >= readyAt && task.dur >= 200);
+  const preloadEnd = await evaluate('window.__preloadEnd');
+  const blocking = longTasks.filter((task) => task.start >= readyAt && task.start <= preloadEnd && task.dur >= 200);
   check(
     '预载建树不产生 ≥200ms 主线程长任务',
     blocking.length === 0,

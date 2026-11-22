@@ -2,7 +2,7 @@
 // grill: 成品检索=skill 库无 code-reader e2e 成品; 输入固定=临时 bare 仓库+固定 API 路径; 步骤机械=建仓/调 API/断言; 判读固定=HTTP 200 与字段值; 失效场景=构造不出（仅本应用）
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,8 @@ import { matchRank } from '../src/search/ranking.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const base = 'http://127.0.0.1:8799';
-const root = mkdtempSync(path.join(os.tmpdir(), 'cr-e2e-'));
+const stubPort = Number(process.env.E2E_LLM_PORT || 8899);
+const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'cr-e2e-')));
 const work = path.join(root, 'work');
 const peer = path.join(root, 'peer');
 const remote = path.join(root, 'remote.git');
@@ -189,7 +190,7 @@ const animationRequested = lastUserContent.includes('"animationRequested":true')
   response.end(JSON.stringify({ choices: [{ message: { content } }] }));
 });
 
-await new Promise((resolve) => stub.listen(8899, '127.0.0.1', resolve));
+await new Promise((resolve) => stub.listen(stubPort, '127.0.0.1', resolve));
 
 const dataDir = path.join(root, 'data');
 mkdirSync(dataDir, { recursive: true });
@@ -239,7 +240,7 @@ const server = spawn(process.execPath, ['server.js'], {
     CODE_READER_DATA_DIR: dataDir,
     LLM_API_KEY: 'test-key',
     LLM_MODEL: 'stub-model',
-    LLM_BASE_URL: 'http://127.0.0.1:8899/v1',
+    LLM_BASE_URL: `http://127.0.0.1:${stubPort}/v1`,
     LLM_PROTOCOL: 'openai',
     CODE_READER_NVIM: '/bin/cat',
     CODE_READER_PROFILE_JSON: profileFixture,

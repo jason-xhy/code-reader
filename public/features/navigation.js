@@ -1,6 +1,6 @@
 // 能力：阅读导航（跳转栈、gd/gr、阅读路径、\e/:e 文件、两侧栏入口）。
 import { elements } from '../core/dom.js';
-import { state, jumpStack, jumpForwardStack, editor, noteFocusIntent } from '../core/state.js';
+import { state, jumpStack, jumpForwardStack, editor, noteFocusIntent, getFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 import { focusTree } from './tree.js';
 
@@ -143,11 +143,15 @@ export function toggleInsightsPanel() {
     return;
   }
   // 隐藏时打开；悬停/已打开时钉住；随后聚焦解释窗口以便 j/k 导航。
+  cancelTreeFocusRequest();
   window.__crPanels?.pin('insights');
   // 打开即交焦点：延迟 200ms 会让紧随其后的 j/k 仍落在编辑器里（表现为“没转移焦点”）。
   deps.focusExplanationPanel();
   // 首次从隐藏态滑出时再补一次：个别浏览器会忽略对刚取消 inert 元素的首帧聚焦。
-  if (!visible) setTimeout(deps.focusExplanationPanel, 0);
+  const intent = getFocusIntent();
+  if (!visible) setTimeout(() => {
+    if (intent === getFocusIntent()) deps.focusExplanationPanel();
+  }, 0);
 }
 
 // ---- 跳转 ----

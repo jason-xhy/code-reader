@@ -10,6 +10,7 @@
     "build:vendor": "node scripts/build-editor.mjs",
     "test:llm": "node scripts/llm-anthropic-test.mjs",
     "e2e": "node scripts/e2e.mjs",
+    "test:keyboard": "node scripts/keyboard-regression.mjs",
     "test:browser": "node scripts/browser-check.mjs",
     "check": "node scripts/check-syntax.mjs"
   },

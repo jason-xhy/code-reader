@@ -446,6 +446,17 @@ export async function fetchFunctionHistory(line) {
 }
 
 export function renderHistory() {
+  // 异步历史刷新会移除正在聚焦的提交按钮；把焦点保留在历史窗口。
+  const ownedFocus = elements.historyContent.contains(document.activeElement);
+  renderHistoryContents();
+  if (ownedFocus) {
+    const target = elements.historyContent.querySelector('.commit-header') || elements.historyContent;
+    if (target === elements.historyContent) target.tabIndex = -1;
+    target.focus({ preventScroll: true });
+  }
+}
+
+function renderHistoryContents() {
   const history = state.history;
   elements.historyContent.replaceChildren();
   if (!history) {

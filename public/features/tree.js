@@ -363,7 +363,7 @@ export function updateTreeFocus() {
 export function focusTree() {
   if (!state.repository) return false;
   const rows = treeRows();
-  if (!rows.length) return false;
+  // 数据尚未到达时也必须立即接管键盘，不能让 j/k 穿透到代码窗。
   // 文件树窗口拿到焦点：递增焦点意图，作废加载中代码窗的「迟到接管」。
   noteFocusIntent();
   // 文件树默认收起为覆盖层：键盘聚焦时先滑出，避免焦点落在屏幕外。
@@ -472,7 +472,7 @@ function wireTreeEvents() {
   function handleTreeKeydown(event) {
     if (event.isComposing || event.keyCode === 229) return;
     const rows = treeRows();
-    if (!rows.length) return;
+    if (!rows.length && event.key !== 'Escape' && event.key !== 'q') return;
     if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
       const row = rows[Math.max(0, Math.min(treeFocusIndex, rows.length - 1))];
       if (!row) return;
