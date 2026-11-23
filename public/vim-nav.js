@@ -365,7 +365,10 @@ export function createVimNav() {
     const scroller = scrollableFor(root, active);
     // 只有一个可聚焦项（如 Vim 帮助/本地快捷键只有关闭按钮）时视为阅读
     // 模式：j/k/G/gg 滚动内容，而不是在唯一的按钮上原地打转。
-    const listMode = index >= 0 && (items.length > 1 || !scroller);
+    // data-vim-list：显式列表容器（函数提交历史）。焦点落在容器本身、
+    // 内容又可滚动时，j/k 仍应在列表项之间移动，而不是逐行滚文本。
+    const explicitList = root.hasAttribute?.('data-vim-list');
+    const listMode = explicitList || (index >= 0 && (items.length > 1 || !scroller));
     const finished = () => {
       resetPrefixes();
       return true;
@@ -405,7 +408,11 @@ export function createVimNav() {
       event.preventDefault();
       event.stopPropagation();
       if (listMode) {
-        if (!focusIndex(items, index + delta * times)) return false;
+        // 焦点还在列表容器本身（index=-1）时：j 进首项、k 进末项。
+        const nextIndex = index < 0
+          ? (delta > 0 ? 0 : items.length - 1)
+          : index + delta * times;
+        if (!focusIndex(items, nextIndex)) return false;
         return finished();
       }
       if (scroller) {

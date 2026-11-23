@@ -489,6 +489,45 @@ input:disabled { opacity: .45; }
 .nvim-keymap-desc { flex: 1; color: #b8c6d8; }
 .nvim-keymap-mode { color: #60738d; font-family: monospace; font-size: 10px; }
 .nvim-keymap-empty { padding: 14px 6px; color: var(--muted); font-size: 12px; }
+
+/* 快捷键设置 */
+.keymap-dialog { max-width: 780px; }
+.keymap-body { padding: 4px 21px 18px; }
+.keymap-list { max-height: min(58vh, 480px); overflow: auto; }
+.keymap-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 200px) 200px 1fr;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #1d2836;
+  padding: 5px 6px;
+  font-size: 11px;
+}
+.keymap-row.customized .keymap-label { color: #9dc7fa; }
+.keymap-label { color: #b8c6d8; }
+.keymap-binding {
+  border: 1px solid #34465b;
+  border-radius: 4px;
+  background: #192534;
+  color: #9fc7f7;
+  padding: 3px 8px;
+  font-family: monospace;
+  font-size: 11px;
+  text-align: center;
+  cursor: pointer;
+}
+.keymap-binding:hover { border-color: var(--accent); color: var(--accent); }
+.keymap-binding.capturing {
+  border-color: #d9a443;
+  color: #f0c674;
+  font-family: inherit;
+  animation: keymap-pulse 1.1s ease-in-out infinite;
+}
+@keyframes keymap-pulse { 50% { border-color: #f0c674; } }
+.keymap-variants { color: #60738d; font-size: 10px; }
+@media (max-width: 720px) {
+  .keymap-row { grid-template-columns: 1fr; gap: 4px; }
+}
 #code-area.mode-nvim > .code-empty,
 #code-area.mode-nvim > .editor-host,
 #code-area.mode-nvim > .question-editor { display: none !important; }
@@ -1154,6 +1193,25 @@ input[readonly] { color: #8391a4; background: #111821; }
 }
 .trail-chip:hover { border-color: var(--accent); color: var(--accent); }
 .trail-chip.current { border-color: var(--accent); color: var(--accent); background: #16202f; }
+.trail-index {
+  display: inline-block;
+  min-width: 12px;
+  margin-right: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+}
+.trail-chip.current .trail-index { color: var(--accent); }
+.trail-more {
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.trail-more:hover { border-color: var(--accent); color: var(--accent); }
 
 /* 提问预设 */
 .question-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }

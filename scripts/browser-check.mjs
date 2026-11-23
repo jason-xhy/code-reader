@@ -1065,6 +1065,170 @@ try {
     check('函数提交历史 j/k/gg/G 与提交详情 diff（历史列表为空）', false, JSON.stringify(historyItemTexts));
   }
 
+  // ---- 键盘/阅读闭环（2026-11-23）：函数历史容器级 j/k、阅读路径按文件合并、
+  // 快捷键改绑与 Shift 备用键、NORMAL 模式输入法组字保护。----
+
+  // 函数提交历史：容器本身聚焦且内容可滚动时，j/k 仍要在提交项之间移动，
+  // 而不是逐行滚文本（data-vim-list）。
+  const historyRowCount = await evaluate("document.querySelectorAll('#history-content .commit-header').length");
+  if (historyRowCount >= 2) {
+    const historyNav = await evaluateJson(`JSON.stringify((() => {
+      const box = document.querySelector('#history-content');
+      box.style.maxHeight = '72px';
+      box.style.overflowY = 'auto';
+      box.focus();
+      return { scrollable: box.scrollHeight > box.clientHeight + 1, items: box.querySelectorAll('.commit-header').length };
+    })())`);
+    await sleep(150);
+    await pressRealKey('j', 'KeyJ', 74);
+    await sleep(200);
+    const historyFirst = await evaluate("(document.activeElement?.querySelector?.('.commit-hash')?.textContent || '')");
+    await pressRealKey('j', 'KeyJ', 74);
+    await sleep(200);
+    const historySecond = await evaluate("(document.activeElement?.querySelector?.('.commit-hash')?.textContent || '')");
+    await pressRealKey('k', 'KeyK', 75);
+    await sleep(200);
+    const historyBack = await evaluate("(document.activeElement?.querySelector?.('.commit-hash')?.textContent || '')");
+    await evaluate("(() => { const box = document.querySelector('#history-content'); box.style.maxHeight = ''; box.style.overflowY = ''; return true; })()");
+    check(
+      '函数提交历史容器聚焦且可滚动时 j/k 仍移动提交项',
+      historyNav.scrollable && Boolean(historyFirst) && historySecond !== historyFirst && historyBack === historyFirst,
+      JSON.stringify({ historyNav, historyFirst, historySecond, historyBack }),
+    );
+  } else {
+    check('函数提交历史容器聚焦且可滚动时 j/k 仍移动提交项（提交不足）', false, `rows=${historyRowCount}`);
+  }
+
+  // 阅读路径：同一文件不同行只保留最新一次；Ctrl+Alt+R 打开列表，Enter 跳转。
+  const trailFile = await evaluate("window.__ts.snapshot().currentFile || ''");
+  const trailLine = await evaluate("window.__ts.snapshot().activeLine || 1");
+  if (trailFile) {
+    await evaluate(`window.__ts.openFile('Makefile', 5, 0).catch(() => null)`);
+    await sleep(500);
+    await evaluate(`window.__ts.openFile(${JSON.stringify(trailFile)}, ${trailLine + 40}, 0)`);
+    await sleep(600);
+    const trailState = await evaluateJson(`JSON.stringify((() => {
+      const trail = window.__ts.snapshot().readingTrail;
+      const same = trail.filter((entry) => entry.path === ${JSON.stringify(trailFile)});
+      return {
+        count: same.length,
+        line: same.length ? same[same.length - 1].line : null,
+        chips: [...document.querySelectorAll('#reading-trail .trail-chip')].map((chip) => chip.textContent),
+        more: Boolean(document.querySelector('#reading-trail .trail-more')),
+      };
+    })())`);
+    check(
+      '阅读路径按文件合并且只保留最新行',
+      trailState.count === 1 && trailState.line === trailLine + 40 && trailState.more,
+      JSON.stringify(trailState),
+    );
+    await evaluate("document.querySelector('.cm-content').focus(); true");
+    await pressRealKey('r', 'KeyR', 82, 3);
+    await sleep(500);
+    const trailPicker = await evaluateJson("JSON.stringify({ open: document.querySelector('#quickpick')?.hidden === false, rows: document.querySelectorAll('#quickpick .quickpick-row').length })");
+    await pressRealKey('Enter', 'Enter', 13, 0, '\r');
+    await sleep(800);
+    const trailJumped = await evaluateJson("JSON.stringify({ hidden: document.querySelector('#quickpick')?.hidden, file: window.__ts.snapshot().currentFile })");
+    check(
+      'Ctrl+Alt+R 打开阅读路径列表并可 Enter 跳转',
+      trailPicker.open && trailPicker.rows >= 2 && trailJumped.hidden && Boolean(trailJumped.file),
+      JSON.stringify({ trailPicker, trailJumped }),
+    );
+    // 恢复进入本节前的文件与行，避免影响后续用例依赖的当前文件。
+    await evaluate(`window.__ts.openFile(${JSON.stringify(trailFile)}, ${trailLine}, 0)`);
+    await sleep(600);
+  } else {
+    check('阅读路径按文件合并（当前无文件）', false, trailFile);
+  }
+
+  // 快捷键：所有 Ctrl+Alt 组合键接受 Shift 备用键；设置对话框可改绑并恢复默认。
+  await evaluate("document.querySelector('.cm-content')?.focus(); true");
+  await pressRealKey('p', 'KeyP', 80, 11);
+  await sleep(500);
+  const shiftFallback = await evaluate("Boolean(document.querySelector('#quickpick .quickpick-input'))");
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(250);
+  await evaluate("document.getElementById('keymap-settings').click(); true");
+  await sleep(300);
+  const keymapDialogState = await evaluateJson("JSON.stringify({ open: document.querySelector('#keymap-dialog')?.open === true, rows: document.querySelectorAll('#keymap-list .keymap-row').length })");
+  const searchRow = await evaluate("[...document.querySelectorAll('#keymap-list .keymap-row')].findIndex((row) => row.querySelector('.keymap-label')?.textContent === '工作区搜索')");
+  await evaluate(`document.querySelectorAll('#keymap-list .keymap-row')[${searchRow}].querySelector('.keymap-binding').click(); true`);
+  await sleep(150);
+  await pressRealKey('u', 'KeyU', 85, 11);
+  await sleep(200);
+  const rebound = await evaluate("JSON.parse(localStorage.getItem('code-reader-keymap-v1') || '{}')['search.workspace'] || ''");
+  await evaluate("document.getElementById('keymap-done').click(); true");
+  await sleep(250);
+  await evaluate("document.querySelector('.cm-content')?.focus(); true");
+  await pressRealKey('u', 'KeyU', 85, 11);
+  await sleep(500);
+  const reboundWorks = await evaluate("Boolean(document.querySelector('#quickpick .quickpick-input'))");
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(250);
+  await evaluate("document.getElementById('keymap-settings').click(); true");
+  await sleep(250);
+  await evaluate("document.getElementById('keymap-reset').click(); true");
+  await sleep(200);
+  await evaluate("document.getElementById('keymap-done').click(); true");
+  await sleep(200);
+  const resetBinding = await evaluate("JSON.parse(localStorage.getItem('code-reader-keymap-v1') || '{}')['search.workspace'] || ''");
+  await evaluate("document.querySelector('.cm-content')?.focus(); true");
+  await pressRealKey('p', 'KeyP', 80, 3);
+  await sleep(500);
+  const defaultRestored = await evaluate("Boolean(document.querySelector('#quickpick .quickpick-input'))");
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(250);
+  check(
+    '快捷键支持 Shift 备用键、设置对话框改绑与恢复默认',
+    shiftFallback && keymapDialogState.open && keymapDialogState.rows >= 10 && rebound === 'Ctrl+Alt+Shift+U'
+    && reboundWorks && resetBinding === '' && defaultRestored,
+    JSON.stringify({ shiftFallback, keymapDialogState, rebound, reboundWorks, resetBinding, defaultRestored }),
+  );
+
+  // 输入法组字：NORMAL 模式提交的文字不能写入文档，也不能当成 vim 命令
+  // （上游插件把单字符提交当按键，提交 "i" 会直接进 INSERT）。
+  await evaluate("window.__crPanels?.hideAll(); document.querySelector('.cm-content')?.focus(); true");
+  await sleep(300);
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(250);
+  const imeBase = await evaluateJson("JSON.stringify(window.__ts.snapshot().editor)");
+  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Process', code: 'Process', windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
+  await send('Input.imeSetComposition', { text: 'i', selectionStart: 1, selectionEnd: 1 });
+  await sleep(150);
+  await send('Input.insertText', { text: 'i' });
+  await sleep(300);
+  const imeSingle = await evaluateJson("JSON.stringify(window.__ts.snapshot().editor)");
+  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Process', code: 'Process', windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
+  await send('Input.imeSetComposition', { text: 'ceshi', selectionStart: 5, selectionEnd: 5 });
+  await sleep(150);
+  await send('Input.insertText', { text: '测试' });
+  await sleep(300);
+  const imeMulti = await evaluateJson("JSON.stringify(window.__ts.snapshot().editor)");
+  check(
+    'NORMAL 模式输入法组字不写入文档、不进入 INSERT',
+    imeSingle.mode === 'NORMAL' && imeMulti.mode === 'NORMAL'
+    && imeSingle.cursor.line === imeBase.cursor.line && imeSingle.cursor.character === imeBase.cursor.character
+    && imeMulti.cursor.character === imeBase.cursor.character && imeMulti.lines === imeBase.lines,
+    JSON.stringify({ imeBase, imeSingle, imeMulti }),
+  );
+  // 丢弃组字后普通 vim 按键必须仍然工作（CM 组字状态要被正确结束）。
+  await pressRealKey('i', 'KeyI', 73);
+  await sleep(300);
+  const imeRecovered = await evaluate("window.__ts.snapshot().editor.mode");
+  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Process', code: 'Process', windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
+  await send('Input.imeSetComposition', { text: 'zhong', selectionStart: 5, selectionEnd: 5 });
+  await sleep(150);
+  await send('Input.insertText', { text: '中' });
+  await sleep(300);
+  const imeInsert = await evaluateJson("JSON.stringify(window.__ts.snapshot().editor)");
+  await pressRealKey('Escape', 'Escape', 27);
+  await sleep(200);
+  check(
+    '组字保护后 vim 按键仍工作，INSERT 模式组字正常输入',
+    imeRecovered === 'INSERT' && imeInsert.mode === 'INSERT' && imeInsert.cursor.character >= 1,
+    JSON.stringify({ imeRecovered, imeInsert }),
+  );
+
   // 文件树 gg/G：焦点在树上时跳到最后一个/第一个文件。
   await evaluate("window.__crPanels?.show('sidebar'); document.querySelector('#file-tree').focus(); true");
   const treeRowCount = await evaluate("document.querySelectorAll('#file-tree .tree-row').length");

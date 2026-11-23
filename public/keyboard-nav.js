@@ -5,6 +5,7 @@
 //   Ctrl+Alt+K  给当前顶层窗口里的可操作元素与代码行打字母标签，输入标签即点击/聚焦/跳行（easymotion）
 //   Ctrl+Alt+F  输入两个字符，给视口内所有匹配文本打标签，输入标签即跳转（sneak）
 // 只处理当前可命中的顶层（原生 dialog / 提交详情 / 3D 动画 / 普通页面），避免点到遮罩后面的元素。
+import { matchAction } from './core/keymap.js';
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz';
 const MAX_HINT_TARGETS = 676;
 const MAX_SNEAK_MATCHES = 80;
@@ -842,7 +843,9 @@ export function createKeyboardNav({ getEditor, toggleSidebar, toggleInsights, ca
     }
     if (event.ctrlKey || event.altKey || event.metaKey) {
       // 再按一次本模式的快捷键：关闭；其它组合键让给应用（先退出导航模式）。
-      if (event.ctrlKey && event.altKey && !event.metaKey && (event.code === 'KeyK' || event.code === 'KeyF')) {
+      // 键位来自可配置 keymap（输入法/桌面占用时可改绑）。
+      const action = matchAction(event);
+      if (action === 'nav.hint' || action === 'nav.sneak') {
         consume(event);
         close();
         return true;

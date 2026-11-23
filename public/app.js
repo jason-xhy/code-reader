@@ -52,7 +52,9 @@ import {
   jumpBack,
   jumpForward,
   jumpTo,
+  normalizeReadingTrail,
   openExFile,
+  openReadingTrailPicker,
   pushReadingTrail,
   renderReadingTrail,
 } from './features/navigation.js';
@@ -73,6 +75,7 @@ import {
   renderNvimShortcuts,
 } from './features/editor-mode.js';
 import { initDialogsFeature } from './features/dialogs.js';
+import { initKeymapFeature, openKeymapDialog } from './features/keymap.js';
 import { initSearchFeature, openWorkspaceSearch } from './features/search.js';
 import { initShortcuts } from './features/shortcuts.js';
 
@@ -176,7 +179,8 @@ function applyRepositoryPayload(data, { collapsed = null, branches = [], prepare
   // 切仓/重新打开时关闭遗留的搜索或引用列表，避免旧仓库结果在新仓库里跳转。
   if (editor?.isQuickpickOpen()) editor.closeQuickpick();
   state.repository = data.repository;
-  state.readingTrail = readingTrail.map((entry) => ({ ...entry }));
+  // 恢复的阅读路径可能是旧版本按行记录的：统一按文件合并，只留每个文件最新一行。
+  state.readingTrail = normalizeReadingTrail(readingTrail);
   renderReadingTrail();
   state.files = data.files;
   state.filesLower = prepared?.filesLower || data.files.map((filePath) => filePath.toLowerCase());
@@ -310,6 +314,12 @@ const editorInstance = createEditor({
   onWorkspaceSearch() {
     openWorkspaceSearch();
   },
+  onKeymap() {
+    openKeymapDialog();
+  },
+  onReadingTrail() {
+    return openReadingTrailPicker();
+  },
   theme: state.theme,
 });
 setEditor(editorInstance);
@@ -327,6 +337,7 @@ initInsightsFeature({ jumpTo });
 initNavigationFeature({ selectFile, fetchFunctionHistory, focusExplanationPanel });
 initEditorModeFeature();
 initDialogsFeature({ loadRepository });
+initKeymapFeature();
 initWorkspaceFeature({ loadRepository, selectFile, applyRepositoryPayload, renderSource, closeNvim });
 initSearchFeature({ jumpTo });
 const { keyboardNav, vimNav } = initShortcuts();

@@ -260,7 +260,7 @@ function whitespaceExtension(options) {
   return [plugin];
 }
 
-export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoReferences, onJumpBack, onJumpForward, onFocusTree, onOpenFile, onExComplete, onHelp, onWorkspaceSearch, theme = 'one-dark', profile = null }) {
+export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoReferences, onJumpBack, onJumpForward, onFocusTree, onOpenFile, onExComplete, onHelp, onWorkspaceSearch, onKeymap, onReadingTrail, theme = 'one-dark', profile = null }) {
   const host = document.getElementById('editor-host');
   const mount = document.getElementById('editor');
   const quickpick = document.getElementById('quickpick');
@@ -384,10 +384,21 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   Vim.defineEx('tree', 'tree', () => {
     if (typeof onFocusTree === 'function') onFocusTree();
   });
+  // 快捷键改绑与阅读路径列表：与左下角「快捷键」/ Ctrl+Alt+R 同一条能力路径。
+  Vim.defineEx('keys', 'keys', () => {
+    if (typeof onKeymap === 'function') onKeymap();
+  });
+  Vim.defineEx('keymap', 'keymap', () => {
+    if (typeof onKeymap === 'function') onKeymap();
+  });
+  Vim.defineEx('trail', 'trail', () => {
+    if (typeof onReadingTrail === 'function') onReadingTrail();
+  });
 
   const EX_COMMAND_NAMES = [
-    'ask', 'colorscheme', 'e', 'edit', 'gd', 'gr', 'grep', 'help', 'map', 'nmap', 'norm',
-    'q', 'qa', 'search', 'set', 'sort', 'tree', 'vi', 'vmap', 'vsplit', 'w', 'wq',
+    'ask', 'colorscheme', 'e', 'edit', 'gd', 'gr', 'grep', 'help', 'keymap', 'keys', 'map',
+    'nmap', 'norm', 'q', 'qa', 'search', 'set', 'sort', 'trail', 'tree', 'vi', 'vmap',
+    'vsplit', 'w', 'wq',
   ];
   const FILE_EX_COMMANDS = new Set(['e', 'edit', 'vi', 'vsplit']);
   function exCompletions(value) {
@@ -514,6 +525,40 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     }
   }
 
+  // ---- NORMAL 模式的文本输入保护 ----
+  // NORMAL/VISUAL 模式下不该有任何文本写入文档，但输入法组字会绕过 vim 命令层
+  // 直接提交文本：上游 @replit/codemirror-vim 把单字符提交当成 vim 按键（提交
+  // "i" 会进入 INSERT），多字符提交则按普通文本插进代码里（切换输入法时把整串
+  // 拼音落进源码）。这里在 inputHandler 最前层直接丢弃 NORMAL/VISUAL 下的文本
+  // 输入；CM6 在所有 handler 返回 true 且 state 未变化时会 view.update([]) 从
+  // state 重置 DOM，所以不需要再手工清 DOM。r/f/t 等需要字面字符的动作例外。
+  let imeFlashTimer = null;
+
+  function flashTextInputIgnored() {
+    if (!vimModeElement) return;
+    vimModeElement.textContent = '--NORMAL-- 已忽略文字输入（按 i 插入）';
+    clearTimeout(imeFlashTimer);
+    imeFlashTimer = setTimeout(() => updateVimMode(), 1800);
+  }
+
+  function textInputGuard() {
+    return Prec.highest(EditorView.inputHandler.of((targetView, from, to, text) => {
+      if (!text) return false;
+      const vimState = getCM(targetView)?.state?.vim;
+      if (!vimState || vimState.insertMode) return false;
+      // r / f / t 等动作正在等一个字面字符：输入法字符就是它要的字符。
+      if (vimState.expectLiteralNext) return false;
+      // CM 在组字期间（inputState.composing > 0）忽略所有按键；我们丢弃了提交
+      // 文本，个别浏览器/输入法路径不会补 compositionend，必须显式结束组字，
+      // 否则之后的 j/k/i 全部失效（vim 也只看到 Process 键）。上游插件在
+      // forceEndComposition 里同样用合成 compositionend 收尾。
+      targetView.contentDOM.dispatchEvent(new CustomEvent('compositionend'));
+      clearTimeout(imeFlashTimer);
+      flashTextInputIgnored();
+      return true;
+    }));
+  }
+
   function getCursor() {
     if (!view) return { line: 1, character: 0 };
     const head = view.state.selection.main.head;
@@ -548,6 +593,7 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
       displayCompartment.of(displayExtensions()),
       appKeymap,
       VIM_TAB_KEYMAP,
+      textInputGuard(),
       keymap.of([...DEFAULT_KEYMAP_WITHOUT_CTRL_I, ...searchKeymap, ...historyKeymap]),
       vim(),
       EditorView.updateListener.of((update) => {

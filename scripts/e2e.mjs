@@ -820,7 +820,8 @@ appSource.includes('createAnimationHtml') && appSource.includes('fetchFunctionHi
     '两侧栏默认隐藏，悬停边缘滑入',
   );
   assert(
-    appSource.includes("event.code === 'KeyB'") && appSource.includes("event.code === 'KeyI'")
+    appSource.includes("binding: 'Ctrl+Alt+B'") && appSource.includes("binding: 'Ctrl+Alt+I'")
+    && appSource.includes("case 'panel.tree'") && appSource.includes("case 'panel.insights'")
     && appSource.includes('toggle(name)') && appSource.includes('panel.pinned')
     && html.includes('panel-shortcuts') && html.includes('nvim-panel-hints')
     && stylesSource.includes('.panel-shortcuts'),
@@ -833,8 +834,8 @@ appSource.includes('createAnimationHtml') && appSource.includes('fetchFunctionHi
     '代码窗口上方显示左右箭头与 Ctrl+Alt+B/I 提示',
   );
   assert(
-    appSource.includes('createKeyboardNav') && appSource.includes("event.code === 'KeyK'")
-    && appSource.includes("event.code === 'KeyF'") && appSource.includes('keyboardNav.toggle')
+    appSource.includes('createKeyboardNav') && appSource.includes("binding: 'Ctrl+Alt+K'")
+    && appSource.includes("binding: 'Ctrl+Alt+F'") && appSource.includes('keyboardNav.toggle')
     && editorSource.includes('visibleMatches') && editorSource.includes('jumpToMatch')
     && stylesSource.includes('.cr-hint-layer') && stylesSource.includes('.cr-hint-badge'),
     'Ctrl+Alt+K 标签跳转 / Ctrl+Alt+F 两字符定位（easymotion/sneak）',
@@ -924,8 +925,9 @@ appSource.includes('createAnimationHtml') && appSource.includes('fetchFunctionHi
   );
   assert(appSource.includes('applyEditorFont') && appSource.includes('code-reader-theme-v2'), '前端同步本地字体并以本地主题为默认');
   assert(
-    appSource.includes("event.code === 'Digit1'") && appSource.includes("event.code === 'Digit2'")
-    && appSource.includes("event.code === 'KeyE'") && appSource.includes("event.code === 'KeyN'")
+    appSource.includes("binding: 'Ctrl+Alt+1'") && appSource.includes("binding: 'Ctrl+Alt+2'")
+    && appSource.includes("legacy: ['Ctrl+Alt+E']") && appSource.includes("legacy: ['Ctrl+Alt+N']")
+    && appSource.includes("case 'editor.mode'") && appSource.includes("case 'nvim.mode'")
     && html.includes('Ctrl+Alt+1') && html.includes('Ctrl+Alt+2'),
     '编辑器/nvim 页签支持 Ctrl+Alt+1 / Ctrl+Alt+2（兼容 Ctrl+Alt+E / Ctrl+Alt+N）切换',
   );

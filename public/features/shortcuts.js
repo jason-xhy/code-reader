@@ -5,12 +5,14 @@ import { createVimNav } from '../vim-nav.js';
 import { elements } from '../core/dom.js';
 import { state, editor } from '../core/state.js';
 import { isEditableTarget } from '../core/policies.js';
+import { matchAction, matchesAction } from '../core/keymap.js';
 import { activateWorkspaceByIndex, activateWorkspaceByOffset } from './workspace.js';
 import {
   cancelTreeFocusRequest,
   closeInsightsPanel,
   gotoDefinition,
   gotoReferences,
+  openReadingTrailPicker,
   toggleCodeTreePanel,
   toggleInsightsPanel,
 } from './navigation.js';
@@ -43,71 +45,59 @@ export function initShortcuts() {
     editor?.quickpickKeydown(event);
   }, true);
 
-  // 编辑器 ⇄ nvim 页签切换：Ctrl+Alt+1 / Ctrl+Alt+2（主键位）。
-  // 旧键 Ctrl+Alt+E / Ctrl+Alt+N 保留兼容，但 Ctrl+Alt+E 常被桌面环境注册成全局
-  // 快捷键（如 UKUI 的 peony-qt2 = 文件管理器），在 X 层就被抓走、网页收不到。
-  // 工作区切仓：Ctrl+Alt+[ / ] 前后切换，Ctrl+Alt+Shift+1..9 直达第 N 个页签。
-  // 两侧栏入口：Ctrl+Alt+B（代码树）/ Ctrl+Alt+I（分析与解释）——「去这个窗口」。
-  // 工作区搜索：Ctrl+Alt+P（P=project search），复用 gr 引用窗口。
+  // 编辑器 ⇄ nvim 页签切换、工作区切仓、两侧栏入口、工作区搜索、阅读路径列表。
+  // 键位全部来自 core/keymap.js：用户可在「快捷键」设置里改绑（fcitx 默认占用
+  // Ctrl+Alt+P、UKUI 占用 Ctrl+Alt+L 这类桌面差异，页面收不到按键，只能改键位）。
+  // 所有 Ctrl+Alt+X 同时接受 Ctrl+Alt+Shift+X 备用形态（macOS 另接受 ⌘+Option+X）。
   // 捕获阶段消费事件：否则 CodeMirror / xterm 会先把组合键当成输入。
   document.addEventListener('keydown', (event) => {
-    if (!event.ctrlKey || !event.altKey || event.metaKey || event.repeat || event.isComposing) return;
-    if (event.shiftKey) {
-      const digit = /^Digit([1-9])$/.exec(event.code);
-      if (digit) {
-        event.preventDefault();
-        event.stopPropagation();
-        activateWorkspaceByIndex(Number(digit[1]) - 1);
-        return;
+    if (event.defaultPrevented || event.isComposing || event.repeat) return;
+    const action = matchAction(event);
+    if (!action) return;
+    let handled = true;
+    switch (action) {
+      case 'workspace.prev':
+        activateWorkspaceByOffset(-1);
+        break;
+      case 'workspace.next':
+        activateWorkspaceByOffset(1);
+        break;
+      case 'panel.tree':
+        toggleCodeTreePanel();
+        break;
+      case 'panel.insights':
+        toggleInsightsPanel();
+        break;
+      case 'nav.hint':
+        keyboardNav.toggle('hint');
+        break;
+      case 'nav.sneak':
+        keyboardNav.toggle('sneak');
+        break;
+      case 'trail.open':
+        openReadingTrailPicker();
+        break;
+      case 'search.workspace':
+        openWorkspaceSearch();
+        break;
+      case 'editor.mode':
+        setEditorMode('editor');
+        break;
+      case 'nvim.mode':
+        setEditorMode('nvim');
+        break;
+      default: {
+        const slot = action.startsWith('workspace.slot')
+          ? Number(action.slice('workspace.slot'.length))
+          : 0;
+        if (slot >= 1 && slot <= 9) activateWorkspaceByIndex(slot - 1);
+        // goto.definition / goto.references 在下面的冒泡阶段处理，与旧行为一致。
+        else handled = false;
       }
-      // Shift+B/I/K/F 作为备用键：Ctrl+Alt+B/I 被输入法/桌面占用时仍可使用。
     }
-    if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
-      event.preventDefault();
-      event.stopPropagation();
-      activateWorkspaceByOffset(event.code === 'BracketLeft' ? -1 : 1);
-      return;
-    }
-    if (event.code === 'KeyB') {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleCodeTreePanel();
-      return;
-    }
-    if (event.code === 'KeyI') {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleInsightsPanel();
-      return;
-    }
-    if (event.code === 'KeyK' || event.code === 'KeyF') {
-      event.preventDefault();
-      event.stopPropagation();
-      keyboardNav.toggle(event.code === 'KeyK' ? 'hint' : 'sneak');
-      return;
-    }
-    if (event.code === 'KeyR') {
-      event.preventDefault();
-      event.stopPropagation();
-      const chips = [...elements.readingTrail.querySelectorAll('button')];
-      const current = chips.findIndex(chip => chip.classList.contains('current'));
-      const next = chips[(current + (event.shiftKey ? -1 : 1) + chips.length) % chips.length];
-      next?.click();
-      return;
-    }
-    if (event.code === 'KeyP') {
-      event.preventDefault();
-      event.stopPropagation();
-      openWorkspaceSearch();
-      return;
-    }
-    const mode = event.code === 'Digit1' || event.code === 'KeyE' ? 'editor'
-      : event.code === 'Digit2' || event.code === 'KeyN' ? 'nvim'
-        : null;
-    if (!mode) return;
+    if (!handled) return;
     event.preventDefault();
     event.stopPropagation();
-    setEditorMode(mode);
   }, true);
 
   document.addEventListener('keydown', (event) => {
@@ -153,12 +143,12 @@ export function initShortcuts() {
     }
     const editing = isEditableTarget(event.target);
     const dialogOpen = Boolean(document.querySelector('dialog[open]'));
-    if (event.altKey && event.key === '.') {
+    if (matchesAction(event, 'goto.definition')) {
       event.preventDefault();
       gotoDefinition();
       return;
     }
-    if (event.altKey && event.key === 'r') {
+    if (matchesAction(event, 'goto.references')) {
       event.preventDefault();
       gotoReferences();
       return;

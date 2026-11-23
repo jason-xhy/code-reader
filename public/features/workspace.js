@@ -20,6 +20,7 @@ import {
 } from './insights.js';
 import { openHistoryEntry } from './reading-history.js';
 import { renderReadingTrail } from './navigation.js';
+import { bindingDisplay } from '../core/keymap.js';
 
 let deps = {};
 
@@ -44,13 +45,13 @@ export function renderWorkspaceTabs() {
     tab.dataset.key = entry.key;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', String(active));
-    const shortcut = index < 9 ? ` · Ctrl+Alt+Shift+${index + 1}` : '';
+    const shortcut = index < 9 ? ` · ${bindingDisplay(`workspace.slot${index + 1}`)}` : '';
     tab.title = `${entry.path}${shortcut}`;
     tab.addEventListener('click', () => activateWorkspaceEntry(entry));
-    // 页签上方固定显示直达快捷键，便于发现；第 10 个起没有直达键（保留空行对齐）。
+    // 页签上方固定显示直达快捷键（跟随「快捷键」设置改绑），便于发现；第 10 个起没有直达键。
     const key = document.createElement('span');
     key.className = 'workspace-tab-key';
-    key.textContent = index < 9 ? `Ctrl+Alt+Shift+${index + 1}` : '';
+    key.textContent = index < 9 ? bindingDisplay(`workspace.slot${index + 1}`) : '';
     key.setAttribute('aria-hidden', 'true');
     const name = document.createElement('button');
     name.type = 'button';

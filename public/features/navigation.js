@@ -3,6 +3,7 @@ import { elements } from '../core/dom.js';
 import { state, jumpStack, jumpForwardStack, editor, noteFocusIntent, getFocusIntent } from '../core/state.js';
 import { api } from '../core/api.js';
 import { focusTree } from './tree.js';
+import { setEditorMode } from './editor-mode.js';
 
 let deps = {};
 
@@ -14,24 +15,41 @@ export function initNavigationFeature(dependencies) {
 
 // ---- 阅读路径 ----
 
+// 阅读路径按「文件」合并：同一文件访问多行只保留最新一次位置。
+// 它的用途是「回到刚才读的文件」，行级轨迹会让同一文件重复占满面包屑。
+const TRAIL_LIMIT = 8;
+
+export function normalizeReadingTrail(entries) {
+  const merged = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!entry?.path) continue;
+    const line = Number(entry.line) || 1;
+    const existing = merged.findIndex((item) => item.path === entry.path);
+    if (existing >= 0) merged.splice(existing, 1);
+    merged.push({ path: entry.path, line });
+  }
+  return merged.slice(-TRAIL_LIMIT);
+}
+
 export function pushReadingTrail(location) {
   if (!location?.path) return;
-  const entry = { path: location.path, line: location.line || 1 };
-  const existing = state.readingTrail.findIndex((item) => item.path === entry.path && item.line === entry.line);
-  if (existing >= 0) state.readingTrail.splice(existing, 1);
-  state.readingTrail.push(entry);
-  if (state.readingTrail.length > 8) state.readingTrail.shift();
+  state.readingTrail = normalizeReadingTrail([
+    ...state.readingTrail,
+    { path: location.path, line: location.line || 1 },
+  ]);
   renderReadingTrail();
 }
 
 export function renderReadingTrail() {
-  const trail = state.readingTrail;
+  const trail = normalizeReadingTrail(state.readingTrail);
+  state.readingTrail = trail;
   elements.readingTrail.replaceChildren();
   elements.readingTrail.hidden = !trail.length;
   if (!trail.length) return;
   const label = document.createElement('span');
   label.className = 'trail-label';
   label.textContent = '阅读路径';
+  label.title = '同一文件只保留最新一行；Ctrl+Alt+R 打开完整列表';
   elements.readingTrail.append(label);
   trail.forEach((location, index) => {
     if (index > 0) {
@@ -44,13 +62,53 @@ export function renderReadingTrail() {
     chip.type = 'button';
     chip.className = 'trail-chip';
     if (location.path === state.currentFile && location.line === state.activeLine) chip.classList.add('current');
-    chip.textContent = `${location.path.split('/').pop()}:${location.line}`;
-    chip.title = `${location.path}:${location.line}`;
+    const number = document.createElement('span');
+    number.className = 'trail-index';
+    number.textContent = String(index + 1);
+    const name = document.createElement('span');
+    name.textContent = `${location.path.split('/').pop()}:${location.line}`;
+    chip.append(number, name);
+    chip.title = `${location.path}:${location.line} · 点击跳转 · Ctrl+Alt+R 打开列表`;
     chip.addEventListener('click', () => {
       jumpTo({ path: location.path, line: location.line, character: 0 });
     });
     elements.readingTrail.append(chip);
   });
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'trail-more';
+  more.textContent = '列表';
+  more.title = '阅读路径列表（Ctrl+Alt+R）· j/k 选择 · Enter 跳转';
+  more.addEventListener('click', () => openReadingTrailPicker());
+  elements.readingTrail.append(more);
+}
+
+// 阅读路径的快捷访问：把按文件合并后的列表交给引用列表窗口（j/k / ↑↓ 选择、Enter 跳转）。
+export function openReadingTrailPicker() {
+  const trail = normalizeReadingTrail(state.readingTrail);
+  state.readingTrail = trail;
+  if (!trail.length) {
+    elements.sourceStatus.textContent = '阅读路径为空';
+    return false;
+  }
+  if (state.editorMode === 'nvim') {
+    // 列表窗口挂在代码区上；nvim 页签下代码区被终端占满，先切回内置编辑器。
+    setEditorMode('editor');
+  }
+  window.__crPanels?.hideAll();
+  noteFocusIntent();
+  // 最近访问的排在前面：列表按时间倒序，首个即上次位置。
+  const items = [...trail].reverse().map((location) => ({
+    path: location.path,
+    line: location.line,
+    character: 0,
+  }));
+  editor.showQuickpick(items, (picked) => {
+    jumpTo(picked);
+  }, {
+    title: `阅读路径 ${items.length} 个位置（按文件合并，只保留最新一行）· j/k 或 ↑↓ 选择 · Enter 跳转 · Esc 取消`,
+  });
+  return true;
 }
 
 // ---- 两侧栏入口 ----
