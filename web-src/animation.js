@@ -1,3 +1,4 @@
+import { mountXhciScene } from './xhci-scene.js';
 import { animationCommandForKey } from '../public/core/animation-keys.js';
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 动画运行时与 parseAnimation 输出结构强绑定
 // grill: 成品检索=skill 库无 code-reader 动画运行时成品; 输入固定=受限动画 JSON; 步骤机械=确定性布局+步骤时间轴; 判读固定=挂载成功/降级; 失效场景=构造不出（仅本应用）
@@ -69,6 +70,14 @@ function buildControls(container, state) {
   });
   listWrap.appendChild(list);
   container.appendChild(listWrap);
+  const detail = document.createElement('section');
+  detail.className = 'anim-step-detail';
+  detail.setAttribute('aria-live', 'polite');
+  const explanation = document.createElement('p');
+  const evidence = document.createElement('p');
+  evidence.className = 'anim-step-evidence';
+  detail.append(explanation, evidence);
+  container.appendChild(detail);
 
   const playButton = bar.querySelector('[data-act="play"]');
   const progress = bar.querySelector('.anim-progress');
@@ -81,10 +90,11 @@ function buildControls(container, state) {
     state.speed = Number(event.target.value) || 1;
   });
   progress.addEventListener('input', () => state.seek(Number(progress.value), { pause: true }));
-  state.ui = { playButton, progress, stepLabel, list };
+  state.ui = { playButton, progress, stepLabel, list, explanation, evidence };
 }
 
 export function mountAnimation(root, data) {
+  if (data.scene?.type === 'xhci-missed-service') return mountXhciScene(root, data);
   const container = root.closest('.anim-stage')?.parentElement || document.body;
   const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
   const totalSeconds = Math.max(1, data.steps.length * STEP_SECONDS - 0.5);
@@ -269,6 +279,8 @@ function applyTime(state, time) {
     line.material.opacity = isActive ? 0.95 : 0.18;
   }
   if (state.ui) {
+    state.ui.explanation.textContent = active.detail || '';
+    state.ui.evidence.textContent = [active.file ? `${active.file}:${active.lineStart || 1}${active.lineEnd ? `–${active.lineEnd}` : ''}` : '', active.spec ? `规范：${active.spec}` : ''].filter(Boolean).join(' · ');
     state.ui.progress.value = String(time);
     state.ui.stepLabel.textContent = `${index + 1} / ${state.data.steps.length}`;
     [...state.ui.list.children].forEach((item, itemIndex) => {

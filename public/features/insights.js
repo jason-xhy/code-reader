@@ -670,6 +670,8 @@ async function submitQuestion() {
   elements.questionError.textContent = '';
   state.explanation = { status: 'loading', path: filePath, line, animationRequested: wantsAnimation };
   renderExplanation();
+  window.__crPanels?.pin('insights');
+  elements.explanationContent.focus({ preventScroll: true });
   // 回答返回时，如果用户这段时间没有主动把焦点移到别处，就打开解释窗口并
   // 把焦点交给内容区——答案一到即可 j/k 阅读。用户切去别处则不抢焦点。
   let focusMoved = false;
@@ -992,6 +994,7 @@ export function focusExplanationPanel() {
 
 let animationUrls = null;
 let animationReturnFocus = null;
+let animationRequestVersion = 0;
 
 function closeAnimationUrls() {
   if (!animationUrls) return;
@@ -1001,6 +1004,7 @@ function closeAnimationUrls() {
 }
 
 export function closeAnimation() {
+  animationRequestVersion += 1;
   if (!state.animationOpen && !animationUrls) return;
   state.animationOpen = false;
   elements.animationOverlay.hidden = true;
@@ -1014,6 +1018,7 @@ export function closeAnimation() {
 
 async function openAnimation(animation, trigger = null) {
   if (!animation) return;
+  const requestVersion = ++animationRequestVersion;
   if (!state.animationOpen) animationReturnFocus = trigger || document.activeElement;
   state.animationOpen = true;
   elements.animationOverlay.hidden = false;
@@ -1021,11 +1026,21 @@ async function openAnimation(animation, trigger = null) {
   elements.animationDownload.removeAttribute('href');
   elements.animationClose.focus({ preventScroll: true });
   try {
+    // Existing FAQ animations can acquire the concrete scene without another LLM call.
+    if (!animation.scene && /(^|\/)xhci-ring\.c$/.test(state.currentFile || '')
+      && /COMP_MISSED_SERVICE_ERROR|Missed\s*Service|错过.*(?:ESIT|服务)/i.test(JSON.stringify(animation))) {
+      const result = await api(`/api/repositories/${encodeURIComponent(state.repository.id)}/animation-scene`, {
+        method: 'POST', body: JSON.stringify({ path: state.currentFile }),
+      });
+      if (requestVersion !== animationRequestVersion || !state.animationOpen) return;
+      if (result.animation) animation = result.animation;
+    }
     if (!state.animationRuntime) {
       const response = await fetch('/vendor/three/animation.bundle.js');
       if (!response.ok) throw new Error('动画运行时缺失，请先执行 npm run build:vendor');
       state.animationRuntime = await response.text();
     }
+    if (requestVersion !== animationRequestVersion || !state.animationOpen) return;
     closeAnimationUrls();
     const previewHtml = createAnimationHtml(animation, '', {
       runtimeUrl: new URL('/vendor/three/animation.bundle.js', window.location.origin).href,
@@ -1038,6 +1053,7 @@ async function openAnimation(animation, trigger = null) {
     elements.animationDownload.href = offlineUrl;
     elements.animationDownload.download = `${(animation.title || 'code-animation').replace(/[\\/:*?"<>|]/g, '_')}.html`;
   } catch (error) {
+    if (requestVersion !== animationRequestVersion) return;
     closeAnimation();
     showNotice(`动画加载失败：${error.message}`, { error: true });
   }

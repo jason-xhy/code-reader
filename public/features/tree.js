@@ -271,6 +271,21 @@ function openFilteredFile(filePath) {
 }
 
 export function renderTree() {
+  const active = document.activeElement;
+  const ownedFocus = elements.fileTree.contains(active);
+  const path = active?.closest?.('.tree-row')?.dataset.path
+    || treeRows()[treeFocusIndex]?.dataset.path;
+  renderTreeContents();
+  if (ownedFocus) {
+    const index = treeRows().findIndex((row) => row.dataset.path === path);
+    if (index >= 0) treeFocusIndex = index;
+    updateTreeFocus();
+    // replaceChildren 会移除正在聚焦的按钮；立即接回焦点，避免按键落到 body。
+    elements.fileTree.focus({ preventScroll: true });
+  }
+}
+
+function renderTreeContents() {
   elements.fileTree.replaceChildren();
   if (!state.tree) {
     state.filterMatches = [];
@@ -358,6 +373,11 @@ export function updateTreeFocus() {
   treeFocusIndex = Math.max(0, Math.min(treeFocusIndex, rows.length - 1));
   rows.forEach((row, index) => row.classList.toggle('key-focus', index === treeFocusIndex));
   rows[treeFocusIndex].scrollIntoView({ block: 'nearest' });
+  // Tab/鼠标聚焦行按钮时，让真实焦点与导航下标一起移动。
+  const activeRow = document.activeElement?.closest?.('.tree-row');
+  if (activeRow && elements.fileTree.contains(activeRow) && activeRow !== rows[treeFocusIndex]) {
+    rows[treeFocusIndex].focus({ preventScroll: true });
+  }
 }
 
 export function focusTree() {
@@ -420,6 +440,10 @@ function flushTreeFilter() {
 }
 
 function wireTreeEvents() {
+  // contenteditable 仅声明这里接管输入（Vimium 据此放行 j/k），树仍是只读数据视图。
+  elements.fileTree.addEventListener('beforeinput', (event) => event.preventDefault());
+  elements.fileTree.addEventListener('paste', (event) => event.preventDefault());
+  elements.fileTree.addEventListener('drop', (event) => event.preventDefault());
   elements.treeFilter.addEventListener('input', () => {
     // 输入变化后旧的候选下标失效；单候选会在渲染时自动高亮。
     state.filterIndex = -1;
@@ -469,9 +493,10 @@ function wireTreeEvents() {
     updateFilterFocus();
   });
 
+  let typePrefix = "", typeTime = 0;
   function handleTreeKeydown(event) {
     if (event.isComposing || event.keyCode === 229) return;
-    const rows = treeRows();
+    let rows = treeRows();
     if (!rows.length && event.key !== 'Escape' && event.key !== 'q') return;
     if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
       const row = rows[Math.max(0, Math.min(treeFocusIndex, rows.length - 1))];
@@ -489,6 +514,7 @@ function wireTreeEvents() {
     if (event.altKey || event.metaKey) return;
     const key = event.key;
     const ctrl = event.ctrlKey;
+    if (ctrl || !/^[a-z.]$/.test(key) || ['j', 'k', 'g', 'o', 'q'].includes(key)) typePrefix = '';
     // 数字计数（5j / 3G / 12gg），0 单独出现表示首项。
     if (!ctrl && /^[0-9]$/.test(key) && !(key === '0' && !treeCount)) {
       treeCount = `${treeCount}${key}`.slice(-6);
@@ -537,6 +563,7 @@ function wireTreeEvents() {
         return;
       }
     } else if (key === 'Enter' || key === 'o') {
+      typePrefix = '';
       const targetIndex = treeFocusIndex;
       treeCount = '';
       treeGPressedAt = 0;
@@ -563,6 +590,22 @@ function wireTreeEvents() {
       elements.treeFilter.focus();
       elements.treeFilter.select();
       return;
+    } else if (!ctrl && /^[a-z.]$/.test(key)) {
+      typePrefix = Date.now() - typeTime < 1200 ? typePrefix + key : key;
+      typeTime = Date.now();
+      // Exact basenames use the complete repository list, including collapsed directories.
+      const exact = state.files.filter(path => path.split('/').pop().toLowerCase() === typePrefix).sort()[0];
+      if (exact && !elements.treeFilter.value.trim()) {
+        const parts = exact.split('/');
+        for (let i = 1; i < parts.length; i++) state.collapsed.delete(parts.slice(0, i).join('/'));
+        persistCollapsed();
+        renderTreeContents();
+        rows = treeRows();
+      }
+      const names = rows.map(row => row.dataset.path.split('/').pop().toLowerCase());
+      let index = exact ? rows.findIndex(row => row.dataset.path === exact) : names.indexOf(typePrefix);
+      if (index < 0) index = names.findIndex(name => name.startsWith(typePrefix));
+      if (index >= 0) treeFocusIndex = index;
     } else {
       treeCount = '';
       treeGPressedAt = 0;
@@ -571,6 +614,17 @@ function wireTreeEvents() {
     finish();
   }
 
+  elements.fileTree.addEventListener('focusin', (event) => {
+    if (!elements.fileTree.contains(event.relatedTarget)) {
+      treeCount = '';
+      treeGPressedAt = 0;
+      typePrefix = '';
+    }
+    const row = event.target.closest('.tree-row');
+    if (!row) return;
+    treeFocusIndex = treeRows().indexOf(row);
+    updateTreeFocus();
+  });
   elements.fileTree.addEventListener('keydown', handleTreeKeydown);
 
   elements.fileTree.addEventListener('click', async (event) => {

@@ -94,7 +94,6 @@ function requestTreeFocus() {
   const token = ++treeFocusRequest;
   const origin = document.activeElement;
   const deadline = Date.now() + 4000;
-  let focusedAt = 0;
   const treeHasFocus = () => {
     const active = document.activeElement;
     return Boolean(active && (active === elements.fileTree || elements.fileTree.contains(active)));
@@ -102,14 +101,8 @@ function requestTreeFocus() {
   const attempt = () => {
     if (token !== treeFocusRequest) return;
     const active = document.activeElement;
-    if (treeHasFocus()) {
-      if (!focusedAt) focusedAt = Date.now();
-      // 聚焦成功后留一个短暂观察窗：重载恢复流程可能在随后一帧把焦点设回
-      // 编辑器，树重渲染也可能把焦点冲掉；这里以 activeElement 实况为准继续补。
-      if (Date.now() - focusedAt < 700 && Date.now() < deadline) setTimeout(attempt, 120);
-      return;
-    }
-    focusedAt = 0;
+    // 已交接成功就结束；继续观察并补焦点会在 Enter 打开文件后抢回键盘。
+    if (treeHasFocus()) return;
     // 顶层弹层在场时不要把焦点拽到背后的文件树。
     if (document.querySelector('dialog[open]') || !elements.commitOverlay.hidden || !elements.animationOverlay.hidden) return;
     // 用户把焦点移到别处则放弃。重载恢复流程会把焦点设回编辑器，继续重试。
@@ -121,9 +114,8 @@ function requestTreeFocus() {
       return;
     }
     focusTree();
-    // focusTree() 返回 true 不代表焦点真的留下（树重渲染/恢复流程都可能冲掉），
-    // 下一次 attempt 以 activeElement 实况复核，不在树内就继续重试。
-    if (Date.now() < deadline) setTimeout(attempt, 120);
+    // 只对实际聚焦失败重试；树重建的焦点保留由 tree 模块同步完成。
+    if (!treeHasFocus() && Date.now() < deadline) setTimeout(attempt, 120);
   };
   attempt();
 }

@@ -2,6 +2,7 @@
 // grill: 成品检索=skill 库无 code-reader Anthropic 专项测试成品; 输入固定=本地 fetch 桩与固定源码; 步骤机械=调用 explainSource 并检查请求体/响应; 判读固定=thinking.disabled 与错误码; 失效场景=构造不出（仅本应用）
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
+import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,7 +28,7 @@ function assert(condition, message, detail = '') {
 }
 
 const calls = [];
-globalThis.fetch = async (url, options) => {
+const stubFetch = async (url, options) => {
   const body = JSON.parse(options.body);
   calls.push({ url, body });
   const lastMessage = body.messages?.at(-1)?.content || '';
@@ -54,6 +55,17 @@ globalThis.fetch = async (url, options) => {
   }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
 
+// Exercise the production Undici transport against a local server, rather than
+// replacing global fetch (the production proxy-aware adapter imports its own fetch).
+const server = createServer(async (request, response) => {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  const result = await stubFetch(`http://127.0.0.1${request.url}`, {body: Buffer.concat(chunks).toString()});
+  response.writeHead(result.status, Object.fromEntries(result.headers));
+  response.end(await result.text());
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+process.env.LLM_BASE_URL = `http://127.0.0.1:${server.address().port}`;
 const { explainSource } = await import(path.join(repoRoot, 'src/llm.js'));
 const source = { content: ['int main(void)', '{', '    return 0;', '}'].join('\n') };
 
@@ -77,6 +89,7 @@ try {
   assert(error?.details?.stopReason === 'max_tokens', '错误详情保留 stop_reason', JSON.stringify(error?.details));
   assert(error?.details?.response?.status === 200, '错误详情保留 HTTP 200 原文', String(error?.details?.response?.status));
 } finally {
+  await new Promise(resolve => server.close(resolve));
   rmSync(dataDir, { recursive: true, force: true });
 }
 

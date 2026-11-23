@@ -3,7 +3,7 @@ import { readSource } from './git.js';
 import { searchDefinitionsForIdentifier } from './symbol-search.js';
 
 const MAX_PRIMARY_CHARS = 28_000;
-const MAX_RELATED_DEFINITIONS = 2;
+const MAX_RELATED_DEFINITIONS = 4;
 const MAX_RELATED_CHARS = 5_000;
 const CALL_KEYWORDS = new Set([
   'if', 'for', 'while', 'switch', 'catch', 'sizeof', 'typeof', 'return', 'function',
@@ -78,7 +78,7 @@ async function relatedDefinition(root, currentFile, identifier) {
   }
 }
 
-export async function buildUnderstandingContext({ repositoryRoot, filePath, source, line }) {
+export async function buildUnderstandingContext({ repositoryRoot, filePath, source, line, question = '' }) {
   const segment = detectFunctionSegment(source.content, line) || detectSegment(source.content, line);
   const primary = {
     file: filePath,
@@ -88,7 +88,10 @@ export async function buildUnderstandingContext({ repositoryRoot, filePath, sour
     kind: segment.kind || 'range',
     text: numberedText(source.content, segment.lineStart, segment.lineEnd, line, MAX_PRIMARY_CHARS),
   };
-  const identifiers = callIdentifiers(source.content, segment, line).slice(0, MAX_RELATED_DEFINITIONS);
+  const candidates = callIdentifiers(source.content, segment, line);
+  // Explicitly asked-about callees outrank generic logging helpers in large event handlers.
+  const requested = candidates.filter(name => String(question).includes(name));
+  const identifiers = [...requested, ...candidates.filter(name => !requested.includes(name))].slice(0, MAX_RELATED_DEFINITIONS);
   const related = (await Promise.all(
     identifiers.map((identifier) => relatedDefinition(repositoryRoot, filePath, identifier)),
   )).filter(Boolean).filter((item) => !(item.file === filePath && item.lineStart === primary.lineStart && item.lineEnd === primary.lineEnd));

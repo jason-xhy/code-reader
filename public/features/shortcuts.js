@@ -86,6 +86,15 @@ export function initShortcuts() {
       keyboardNav.toggle(event.code === 'KeyK' ? 'hint' : 'sneak');
       return;
     }
+    if (event.code === 'KeyR') {
+      event.preventDefault();
+      event.stopPropagation();
+      const chips = [...elements.readingTrail.querySelectorAll('button')];
+      const current = chips.findIndex(chip => chip.classList.contains('current'));
+      const next = chips[(current + (event.shiftKey ? -1 : 1) + chips.length) % chips.length];
+      next?.click();
+      return;
+    }
     if (event.code === 'KeyP') {
       event.preventDefault();
       event.stopPropagation();

@@ -1,3 +1,4 @@
+import { createXhciMissedServiceScene } from './animation/xhci-missed-service.js';
 import { modelFetch as fetch } from './http/model-fetch.js';
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 与 code-reader 的 LLM 调用实现强绑定
 // grill: 成品检索=skill 库无该应用 LLM 调用成品; 输入固定=固化的源码上下文与问题 JSON; 步骤机械=按 protocol 组装请求并解析; 判读固定=按 choices/content 结构解析; 失效场景=构造不出（仅本应用）
@@ -49,7 +50,7 @@ const SYSTEM_PROMPT = `你是一名严谨的代码分析助手。根据用户给
   "nodes": [{"id": "简短英文标识", "label": "节点名称", "kind": "code|data|spec|decision|output", "description": "节点职责"}],
   "steps": [{"title": "步骤名称", "detail": "代码如何执行以及对应规范约束", "node": "当前节点 id", "from": "可选起点节点 id", "to": "可选终点节点 id", "file": "仓库相对路径", "lineStart": 1, "lineEnd": 1, "spec": "对应规范章节或空字符串"}]
 }
-动画用于解释真实执行顺序，nodes 最多 8 个，steps 2 至 16 个；每个步骤必须能由输入代码或文档支持，不得生成 HTML、JavaScript、任意场景代码或虚构执行步骤。`;
+动画必须围绕具体故障场景组织：先说明规范为何设计该机制、要避免的实际问题，再展示正常路径、触发条件、硬件状态/事件、驱动分支、恢复与最终结果。每步 detail 说明输入状态、判断条件和输出状态，关联实际代码位置与已核实规范；对比正常与异常路径，禁止仅用抽象节点复述函数名。涉及 COMP_MISSED_SERVICE_ERROR 等完成码时，解释对应传输调度场景、产生条件以及当前驱动如何处理、为何符合规范；证据缺失明确标注，不能补造场景事实。动画用于解释真实执行顺序，nodes 最多 8 个，steps 2 至 16 个；每个步骤必须能由输入代码或文档支持，不得生成 HTML、JavaScript、任意场景代码或虚构执行步骤。`;
 
 function contextFor(understanding) {
   if (understanding.text.length <= MAX_CONTEXT_CHARS) return understanding;
@@ -281,6 +282,7 @@ const animationRequested = options.animate === true || wantsAnimation(question);
     filePath,
     source,
     line,
+    question,
   }));
   const currentLine = (source.content.split('\n')[line - 1] || '').slice(0, 400);
   let documentation = { hits: [], config: { webEnabled: false }, stats: { files: 0, chunks: 0 } };
@@ -356,6 +358,10 @@ const animationRequested = options.animate === true || wantsAnimation(question);
       }
       throw retryError;
     }
+  }
+  if (animationRequested) {
+    const concrete = createXhciMissedServiceScene({ source, filePath, question, line, documentation: documentation.hits });
+    if (concrete) explanation.animation = concrete;
   }
 const documentedSources = new Set(documentation.hits.map((hit) => hit.source));
   explanation.specifications = explanation.specifications.map((spec) => ({

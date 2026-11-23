@@ -27,7 +27,9 @@ body{margin:0;height:100vh;overflow:hidden;background:var(--bg);color:var(--fg);
 .anim-header{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
 .anim-title{font-weight:600;font-size:15px}
 .anim-sub{color:var(--muted);font-size:12px}
-.anim-stage{position:relative;flex:1;min-height:0}
+.anim-stage{position:relative;flex:1;min-height:180px}
+.anim-step-detail{padding:10px 16px;background:var(--panel);border-top:1px solid var(--line);max-height:28vh;overflow:auto;white-space:pre-wrap}
+.anim-step-detail p{margin:0 0 5px}.anim-step-evidence{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 #animation-root{position:absolute;inset:0}
 #animation-root canvas{display:block;width:100%;height:100%}
 .anim-fallback{position:absolute;inset:0;display:grid;place-content:center;gap:8px;padding:24px;text-align:center;color:var(--muted);background:var(--bg)}

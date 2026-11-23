@@ -8,7 +8,7 @@ const lifecycle = source.slice(source.indexOf('let questionRequest = null;'), so
   .replaceAll('export function', 'function');
 const control = () => ({ value: '', disabled: false, hidden: false, textContent: '', focus() {} });
 const state = { source: {}, repository: { id: 'test' }, currentFile: 'demo.c', activeLine: 1 };
-const elements = Object.fromEntries(['questionEditor', 'questionAnchor', 'questionError', 'questionInput', 'questionSubmit', 'questionCancel', 'questionAnimation'].map((name) => [name, control()]));
+const elements = Object.fromEntries(['questionEditor', 'questionAnchor', 'questionError', 'questionInput', 'questionSubmit', 'questionCancel', 'questionAnimation', 'explanationContent'].map((name) => [name, control()]));
 const requests = [];
 const context = vm.createContext({
   state, elements, AbortController, ANIMATION_HINT_RE, window: {}, document: { addEventListener() {}, removeEventListener() {} },

@@ -404,6 +404,38 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     const argument = text.slice(space + 1);
     return onExComplete(argument).map((filePath) => `${command} ${filePath}`);
   }
+  const searchHistory = [];
+  document.addEventListener('keydown', (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || event.isComposing) return;
+    const panel = input.closest('.cm-vim-panel');
+    if (!panel || !/^[/?]/.test(panel.textContent.trim())) return;
+    if (event.key === 'ArrowUp') {
+      if (!searchHistory.length) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const index = Math.min((input.__crHistoryIndex ?? -1) + 1, searchHistory.length - 1);
+      input.__crHistoryIndex = index;
+      input.value = searchHistory[index];
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    } else if (event.key === 'Enter') {
+      if (input.value) {
+        const old = searchHistory.indexOf(input.value);
+        if (old >= 0) searchHistory.splice(old, 1);
+        searchHistory.unshift(input.value);
+        searchHistory.splice(100);
+      }
+      // Let Vim commit the query before removing focus from its command input.
+      setTimeout(() => {
+        if (document.activeElement === input) {
+          Vim.handleKey(getCM(view), '<Esc>');
+          view.focus();
+        }
+      }, 0);
+    } else if (event.key.length === 1 || event.key === 'Backspace') {
+      input.__crHistoryIndex = -1;
+    }
+  }, true);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Tab') return;
     const input = event.target;

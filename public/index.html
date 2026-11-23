@@ -26,7 +26,8 @@
         <label class="search-label" for="tree-filter">代码树</label>
         <input id="tree-filter" type="search" placeholder="过滤文件…" autocomplete="off" disabled title="过滤后 ↑/↓ 选择候选，Enter 打开；只有一个候选时直接回车打开">
       </div>
-      <nav id="file-tree" class="file-tree" aria-label="代码树" tabindex="0">
+      <!-- 标记为键盘输入宿主，让 Vimium 等扩展将按键交给文件树；beforeinput 禁止改写 DOM。 -->
+      <nav id="file-tree" class="file-tree" aria-label="代码树" tabindex="0" contenteditable="true" spellcheck="false" inputmode="none">
         <div class="empty-tree">打开一个本地或远程 Git 仓库</div>
       </nav>
       <div class="sidebar-footer">

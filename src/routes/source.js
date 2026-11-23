@@ -1,3 +1,5 @@
+import { createXhciMissedServiceScene } from '../animation/xhci-missed-service.js';
+import { searchDocumentation } from '../docs.js';
 // 能力：源码读取、上下文、行/函数历史、提交详情与 LLM 解释。
 import { AppError } from '../errors.js';
 import { readJson, sendJson } from '../http/json.js';
@@ -24,6 +26,23 @@ function repository(params) {
 const repositoryPattern = (action) => new RegExp(`^/api/repositories/([^/]+)/${action}$`);
 
 export const sourceRoutes = [
+  {
+    method: 'POST',
+    pattern: repositoryPattern('animation-scene'),
+    async handler({ request, response, params }) {
+      const current = repository(params);
+      const body = await readJson(request);
+      const source = await readSource(current.root, body.path || '');
+      const documentation = await searchDocumentation({ repositoryRoot: current.root,
+        sourceQuery: `${body.path} COMP_MISSED_SERVICE_ERROR`,
+        query: 'xHCI 4.10.3.2 Missed Service Error ESIT Isochronous',
+      });
+      const animation = createXhciMissedServiceScene({ source, filePath: body.path || '',
+        question: 'COMP_MISSED_SERVICE_ERROR', documentation: documentation.hits,
+      });
+      sendJson(response, 200, { animation });
+    },
+  },
   {
     method: 'GET',
     pattern: repositoryPattern('tree'),

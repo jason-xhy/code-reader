@@ -169,6 +169,7 @@ input:disabled { opacity: .45; }
 .tree-row.active { background: #1d3854; color: #8fc0ff; }
 .tree-row.key-focus { outline: 1px solid var(--accent); outline-offset: -1px; background: #1d3854; color: #8fc0ff; }
 .file-tree:focus { outline: none; }
+.file-tree { caret-color: transparent; }
 .tree-row-flat { padding-left: 6px; }
 .tree-row-flat .tree-name { font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; }
 .tree-row.directory { color: #d2d9e2; }
@@ -1302,3 +1303,5 @@ input[readonly] { color: #8391a4; background: #111821; }
   .editor-tabs-hint { display: none; }
   .code-nav-bar { overflow-x: auto; flex: 0 0 auto; }
 }
+
+.tree-row-flat.key-focus::after { content: attr(data-path); position: fixed; right: 20px; top: 70px; max-width: calc(100vw - 40px); overflow-wrap: anywhere; padding: 8px 12px; background: var(--bg, #20242b); color: var(--fg, #eee); border: 1px solid #888; z-index: 1000; pointer-events: none; box-shadow: 0 3px 12px #0006; }
