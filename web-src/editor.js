@@ -529,10 +529,44 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   // NORMAL/VISUAL 模式下不该有任何文本写入文档，但输入法组字会绕过 vim 命令层
   // 直接提交文本：上游 @replit/codemirror-vim 把单字符提交当成 vim 按键（提交
   // "i" 会进入 INSERT），多字符提交则按普通文本插进代码里（切换输入法时把整串
-  // 拼音落进源码）。这里在 inputHandler 最前层直接丢弃 NORMAL/VISUAL 下的文本
-  // 输入；CM6 在所有 handler 返回 true 且 state 未变化时会 view.update([]) 从
+  // 拼音落进源码）。这里在 inputHandler 最前层直接丢弃 NORMAL/VISUAL 下的组字
+  // 提交；CM6 在所有 handler 返回 true 且 state 未变化时会 view.update([]) 从
   // state 重置 DOM，所以不需要再手工清 DOM。r/f/t 等需要字面字符的动作例外。
+  // 例外二是输入法「直通键」：中文模式（半角标点）下 shift+8 这类符号键不进
+  // 组字，keydown 只报 Process，随后直接提交单个符号字符——它本来就是 vim 命令
+  // 键（* 搜光标下单词、#、%、数字计数…），必须转交 vim 执行；否则输入法一开，
+  // 这些命令全部失效。区分依据：提交前后没有任何组字（composition）事件。
   let imeFlashTimer = null;
+  // 最近一次组字事件（compositionstart/update/end）的时间。组字提交往往在
+  // compositionend 之后才被 CM 的 DOMObserver 处理成文本输入，所以用一个短
+  // 时间窗把「刚从组字里出来的提交」也归为组字文本，继续丢弃。
+  let compositionSeenAt = 0;
+  const COMPOSITION_RECENT_MS = 350;
+
+  function noteComposition() {
+    compositionSeenAt = Date.now();
+  }
+
+  // 直通键可能提交的符号字符：单个 ASCII 可打印字符按原样交给 vim；全角符号
+  // （输入法全角标点模式下 shift+8 提交的是 '＊'）还原成对应 ASCII 再交。中文
+  // 标点模式下部分符号键提交的是 CJK 标点（'/' → '、'、'.' → '。'、'$' → '￥'、
+  // '<' → '《'、'>' → '》'、'`' → '·'），同样还原成原键的 ASCII 命令字符，否则
+  // '/' 搜索、'.' 重复这些命令在中文标点下全部失效。
+  const IME_PUNCT_KEY = new Map([
+    ['、', '/'],
+    ['。', '.'],
+    ['￥', '$'],
+    ['《', '<'],
+    ['》', '>'],
+    ['·', '`'],
+  ]);
+  function directVimKey(text) {
+    if (text.length !== 1) return null;
+    const code = text.charCodeAt(0);
+    if (code >= 0x20 && code <= 0x7e) return text;
+    if (code >= 0xff01 && code <= 0xff5e) return String.fromCharCode(code - 0xfee0);
+    return IME_PUNCT_KEY.get(text) || null;
+  }
 
   function flashTextInputIgnored() {
     if (!vimModeElement) return;
@@ -544,10 +578,27 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
   function textInputGuard() {
     return Prec.highest(EditorView.inputHandler.of((targetView, from, to, text) => {
       if (!text) return false;
-      const vimState = getCM(targetView)?.state?.vim;
+      const cm = getCM(targetView);
+      const vimState = cm?.state?.vim;
       if (!vimState || vimState.insertMode) return false;
       // r / f / t 等动作正在等一个字面字符：输入法字符就是它要的字符。
       if (vimState.expectLiteralNext) return false;
+      // 非组字提交的可打印单字符 = 输入法直通键，当 vim 命令键执行。调用形态
+      // 与上游 vim 插件自己的 inputHandler 一致（fake KeyboardEvent 只带 key）。
+      // 返回 true 兜底：即使该键在 vim 里没有映射，文本也绝不能写进文档。
+      const composing = targetView.composing
+        || Date.now() - compositionSeenAt < COMPOSITION_RECENT_MS;
+      const directKey = composing ? null : directVimKey(text);
+      if (directKey && typeof cm?.state?.vimPlugin?.handleKey === 'function') {
+        cm.state.vimPlugin.handleKey({
+          key: directKey,
+          preventDefault() {},
+          stopPropagation() {},
+        });
+        clearTimeout(imeFlashTimer);
+        updateVimMode();
+        return true;
+      }
       // CM 在组字期间（inputState.composing > 0）忽略所有按键；我们丢弃了提交
       // 文本，个别浏览器/输入法路径不会补 compositionend，必须显式结束组字，
       // 否则之后的 j/k/i 全部失效（vim 也只看到 Process 键）。上游插件在
@@ -613,6 +664,12 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     parent: mount,
   });
   attachVimEvents();
+  // 组字事件时间戳：textInputGuard 靠它区分「组字提交（丢弃）」与「直通键
+  // 提交（交给 vim）」。挂在 contentDOM 原生事件上，跨 openFile 重建 state
+  // 依然有效；guard 合成的 compositionend 也会刷新时间戳，方向是安全的。
+  for (const type of ['compositionstart', 'compositionupdate', 'compositionend']) {
+    view.contentDOM.addEventListener(type, noteComposition);
+  }
   updateCursorPos();
 
   // 打开/定位内容默认把焦点交给编辑器；后台恢复传 focus:false，由调用方在
