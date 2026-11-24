@@ -62,10 +62,10 @@ export function renderShortcutHints() {
   const navInsightsKey = elements.navInsights?.querySelector('kbd');
   if (navInsightsKey) navInsightsKey.textContent = spaced('panel.insights');
   if (elements.navTree) {
-    elements.navTree.title = `${spaced('panel.tree')} 去代码树/收起（焦点已在树内时再按收起；被输入法占用时用 Ctrl+Alt+Shift 变体或左下角「快捷键」改绑）`;
+    elements.navTree.title = `${spaced('panel.tree')} 去代码树/收起（焦点已在树内时再按收起；被输入法占用时用 Ctrl+Alt+Shift 变体或顶栏「设置 → 快捷键」改绑）`;
   }
   if (elements.navInsights) {
-    elements.navInsights.title = `${spaced('panel.insights')} 去代码解释窗口/收起（焦点已在窗口内时再按收起；被输入法占用时用 Ctrl+Alt+Shift 变体或左下角「快捷键」改绑）`;
+    elements.navInsights.title = `${spaced('panel.insights')} 去代码解释窗口/收起（焦点已在窗口内时再按收起；被输入法占用时用 Ctrl+Alt+Shift 变体或顶栏「设置 → 快捷键」改绑）`;
   }
   const tabEditorKey = elements.tabEditor?.querySelector('.editor-tab-key');
   if (tabEditorKey) tabEditorKey.textContent = compact('editor.mode');
@@ -75,6 +75,9 @@ export function renderShortcutHints() {
   if (cycleKeys && cycleKeys.length >= 2) {
     cycleKeys[0].textContent = compact('workspace.prev');
     cycleKeys[1].textContent = compact('workspace.next');
+  }
+  if (elements.settingsMenuButton) {
+    elements.settingsMenuButton.title = `LLM 设置、编辑器环境、快捷键与知识库（${compact('settings.open')}）`;
   }
   // 工作区页签上方的直达键也在页签渲染时从 keymap 读；改绑后重建一次页签。
   if ((elements.workspaceTabs?.children.length || 0) > 0) renderWorkspaceTabs();

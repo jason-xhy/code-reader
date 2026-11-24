@@ -129,4 +129,7 @@ export const elements = {
   navTree: $('#nav-tree'),
   navInsights: $('#nav-insights'),
   panelShortcuts: $('#panel-shortcuts'),
+  settingsMenuButton: $('#settings-menu-button'),
+  settingsMenu: $('#settings-menu'),
+  settingsLlmStatus: $('#settings-llm-status'),
 };

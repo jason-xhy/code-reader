@@ -158,7 +158,8 @@ function renderDocsDialog() {
   elements.docsError.textContent = state.docsError || '';
 }
 
-async function openDocsDialog() {
+// 顶栏「设置」菜单也从这里打开知识库对话框。
+export async function openDocsDialog() {
   state.docsError = '';
   await loadDocsConfig();
   noteFocusIntent();

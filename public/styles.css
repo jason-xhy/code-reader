@@ -992,6 +992,44 @@ input[readonly] { color: #8391a4; background: #111821; }
 .history-empty { padding: 14px; color: var(--muted); font-size: 11px; text-align: center; }
 .history-footer { border-top: 1px solid var(--border); margin-top: 6px; padding: 6px 4px 2px; text-align: right; }
 .footer-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+/* 顶栏「设置」菜单：侧栏默认收起，设置入口只在这里常驻可见。 */
+.settings-group { position: relative; }
+.settings-menu-button { padding: 3px 9px; font-size: 10px; }
+.settings-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  width: 236px;
+  border: 1px solid #3f5874;
+  border-radius: 8px;
+  background: #172231;
+  box-shadow: 0 14px 45px #000a;
+  padding: 6px;
+}
+.settings-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 8px;
+  color: #cdd9e6;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-item:hover, .settings-item:focus-visible { background: #1d3854; }
+.settings-item strong { display: block; color: #eaf2fb; font-size: 12px; }
+.settings-item span {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .theme-select {
   max-width: 132px;
   border: 1px solid #34465b;

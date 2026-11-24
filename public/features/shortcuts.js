@@ -19,6 +19,7 @@ import {
 import { setEditorMode } from './editor-mode.js';
 import { closeAnimation, closeCommitOverlay, closeQuestion, openQuestion } from './insights.js';
 import { openWorkspaceSearch } from './search.js';
+import { openSettingsMenu } from './settings-menu.js';
 
 export function initShortcuts() {
   // 全键盘导航层：easymotion 风格标签跳转（含代码行）+ sneak 风格两字符定位。
@@ -79,6 +80,9 @@ export function initShortcuts() {
         break;
       case 'search.workspace':
         openWorkspaceSearch();
+        break;
+      case 'settings.open':
+        openSettingsMenu();
         break;
       case 'editor.mode':
         setEditorMode('editor');

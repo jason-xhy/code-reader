@@ -15,6 +15,7 @@ export const KEYMAP_ACTIONS = [
   { id: 'nav.sneak', label: '两字符定位', binding: 'Ctrl+Alt+F' },
   { id: 'search.workspace', label: '工作区搜索', binding: 'Ctrl+Alt+P' },
   { id: 'trail.open', label: '阅读路径列表', binding: 'Ctrl+Alt+R' },
+  { id: 'settings.open', label: '打开设置菜单', binding: 'Ctrl+Alt+S' },
   { id: 'workspace.prev', label: '上一个工作区仓库', binding: 'Ctrl+Alt+[' },
   { id: 'workspace.next', label: '下一个工作区仓库', binding: 'Ctrl+Alt+]' },
   { id: 'editor.mode', label: '切到内置编辑器', binding: 'Ctrl+Alt+1', legacy: ['Ctrl+Alt+E'] },

@@ -25,14 +25,7 @@ export function initEditorModeFeature() {
     elements.nvimKeymapDialog.showModal();
   });
   elements.nvimKeymapClose.addEventListener('click', () => elements.nvimKeymapDialog.close());
-  elements.editorEnvSettings.addEventListener('click', async () => {
-    noteFocusIntent();
-    elements.editorEnvDialog.showModal();
-    renderEditorEnvDialog();
-    await loadEditorEnv({ openDialog: true });
-    if (!state.editorProfile?.available) await loadEditorProfile();
-    renderEditorEnvDialog();
-  });
+  elements.editorEnvSettings.addEventListener('click', () => openEditorEnvDialog());
   elements.editorEnvClose.addEventListener('click', () => elements.editorEnvDialog.close());
   elements.editorEnvRefresh.addEventListener('click', async () => {
     elements.editorEnvProgress.textContent = '检测中…';
@@ -69,6 +62,16 @@ export function initEditorModeFeature() {
       elements.editorEnvProgress.textContent = '';
     }
   });
+}
+
+// 顶栏「设置」菜单与侧栏按钮共用同一条打开路径。
+export async function openEditorEnvDialog() {
+  noteFocusIntent();
+  elements.editorEnvDialog.showModal();
+  renderEditorEnvDialog();
+  await loadEditorEnv({ openDialog: true });
+  if (!state.editorProfile?.available) await loadEditorProfile();
+  renderEditorEnvDialog();
 }
 
 export function renderEditorEnvDialog() {
@@ -117,10 +120,10 @@ export function applyEditorAvailability() {
   elements.tabNvim.disabled = !available;
   elements.tabNvim.title = available
     ? '在浏览器内运行本地 vim/neovim（真实插件与键位）· Ctrl+Alt+2'
-    : '未检测到本地 vim/neovim：使用内置编辑器（点左下角「编辑器环境」关联）';
+    : '未检测到本地 vim/neovim：使用内置编辑器（点顶栏「设置 → 编辑器环境」关联）';
   elements.editorTabsHint.textContent = available
     ? 'vim/neovim 为真实本地进程：:w 会写盘，插件与 LSP 使用你的本地配置'
-    : '未检测到本地 vim/neovim，使用内置编辑器 · 可在左下角「编辑器环境」关联';
+    : '未检测到本地 vim/neovim，使用内置编辑器 · 可在顶栏「设置 → 编辑器环境」关联';
   if (!available && state.editorMode === 'nvim') closeNvim();
 }
 
@@ -178,7 +181,7 @@ export function renderNvimKeymaps() {
     elements.nvimKeymapSubtitle.textContent = profile?.error || '未读取到本地 vim/neovim 配置。';
     const empty = document.createElement('div');
     empty.className = 'nvim-keymap-empty';
-    empty.textContent = '请先在左下角「编辑器环境」关联本地 vim/neovim。';
+    empty.textContent = '请先在顶栏「设置 → 编辑器环境」关联本地 vim/neovim。';
     elements.nvimKeymapBody.append(empty);
     return;
   }

@@ -78,6 +78,11 @@ import { initDialogsFeature } from './features/dialogs.js';
 import { initKeymapFeature, openKeymapDialog } from './features/keymap.js';
 import { initSearchFeature, openWorkspaceSearch } from './features/search.js';
 import { initShortcuts } from './features/shortcuts.js';
+import {
+  initSettingsMenu,
+  registerLlmSettingsOpener,
+  updateSettingsLlmStatus,
+} from './features/settings-menu.js';
 
 // v2：本地主题成为默认选项后重置旧版本保存的配色选择，避免历史
 // localStorage（多为早期 one-dark）压过「默认本地」。用户重新选择后照常持久化。
@@ -338,6 +343,7 @@ initNavigationFeature({ selectFile, fetchFunctionHistory, focusExplanationPanel 
 initEditorModeFeature();
 initDialogsFeature({ loadRepository });
 initKeymapFeature();
+initSettingsMenu();
 initWorkspaceFeature({ loadRepository, selectFile, applyRepositoryPayload, renderSource, closeNvim });
 initSearchFeature({ jumpTo });
 const { keyboardNav, vimNav } = initShortcuts();
@@ -535,7 +541,9 @@ const llmSettings = createLlmSettings({
   onStatus(llm) {
     elements.llmStatus.textContent = llm.configured ? `${llm.providerName || 'LLM'} · ${llm.model}` : 'LLM 设置';
     elements.llmStatus.title = llm.error || (llm.configured ? '修改厂商、模型或 API Key' : '选择模型并配置 API Key');
+    updateSettingsLlmStatus(llm.configured ? `${llm.providerName || 'LLM'} · ${llm.model}` : '未配置（点此选择模型并填 API Key）');
   },
 });
 elements.llmStatus.addEventListener('click', llmSettings.open);
+registerLlmSettingsOpener(llmSettings.open);
 llmSettings.load().catch(() => {});
