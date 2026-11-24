@@ -74,6 +74,7 @@ scripts/check-syntax.mjs  语法检查：遍历源码目录，新增模块无需
 - 可选：`clangd` 18+、`pdftotext`（分别用于 LSP 和 PDF 文档索引）
   - 自动在 `PATH` 中寻找 `clangd`、`clangd18`…`clangd21`、`clangd-18` 等版本并取最高者；也支持 neovim mason 安装目录（`~/.local/share/nvim/mason/packages/clangd/*/bin/clangd`）。
   - 指定二进制：`CODE_READER_CLANGD=/path/to/clangd`；限定引擎：`CODE_READER_LSP=clangd|ccls`。
+  - 服务运行中装好 clangd 无需重启：状态轮询发现新引擎后自动初始化并就绪（约一分钟内，受引擎探测缓存影响）。
   - 系统自带 clangd 10 无法解析内核树的 `asm inline` 语法（`CONFIG_CC_HAS_ASM_INLINE=y`），定义/引用会为空；此时状态栏会提示升级，定义跳转回退到 Git 文本检索。
 
 ## 快速开始

@@ -251,6 +251,9 @@ class LspSession {
     this.engine = null;
     this.database = null;
     this.failed = null;
+    // 「未检测到引擎」型失败可自动恢复：clangd 可能是会话失败之后才装上的
+    // （apt 装完不重启服务）。启动失败型保持粘性，避免状态轮询反复拉起坏引擎。
+    this.enginesMissing = false;
     this.lastError = null;
     this.initPromise = null;
     this.openDocuments = new Map();
@@ -258,7 +261,19 @@ class LspSession {
     this.syncedHashes = new Map();
   }
 
+  // 引擎重新出现时清掉粘性失败，让 status() / gd 走正常初始化路径。
+  // detectEngines 有 60s 缓存，装好 clangd 后最多一分钟内恢复。
+  async #recoverIfEnginesAppeared() {
+    if (!this.enginesMissing || this.engine) return;
+    const engines = await detectEngines();
+    if (!engines.length) return;
+    this.enginesMissing = false;
+    this.failed = null;
+    this.initPromise = null;
+  }
+
   async status() {
+    await this.#recoverIfEnginesAppeared();
     const engines = await detectEngines();
     const available = Boolean(this.engine) || engines.length > 0;
     if (available && !this.engine && !this.failed && !this.initPromise) {
@@ -276,7 +291,7 @@ class LspSession {
     } else if (this.failed) {
       detail = this.failed.message;
     } else if (!available) {
-      detail = '未检测到 clangd/ccls';
+      detail = '未检测到 clangd/ccls（装好 clangd 17+ 后自动恢复，无需重启服务）';
     } else {
       detail = `语言服务器尚未启动（将使用 ${info.name} ${info.version}），打开 C/C++ 文件后自动初始化`;
     }
@@ -285,6 +300,9 @@ class LspSession {
       engine: info ? info.name : null,
       engineVersion: info ? info.version : null,
       initialized: Boolean(this.engine),
+      // 引擎缺失（还没装 clangd）终归可恢复：装好后 status 会直接初始化或经
+      // 粘性失败恢复。前端据此保持轮询，徽标自动从「不可用」变「就绪」。
+      recoverable: !available,
       detail,
     };
   }
@@ -309,6 +327,7 @@ class LspSession {
   }
 
   async #ensureReady(filePath, content) {
+    await this.#recoverIfEnginesAppeared();
     if (this.failed) throw this.failed;
     if (!this.initPromise) this.initPromise = this.#initialize();
     await this.initPromise;
@@ -318,9 +337,15 @@ class LspSession {
   async #initialize() {
     const engines = await detectEngines();
     if (!engines.length) {
-      this.failed = new AppError('未检测到语言服务器（clangd/ccls）', 503, 'LSP_UNAVAILABLE');
+      this.enginesMissing = true;
+      this.failed = new AppError(
+        '未检测到语言服务器（clangd/ccls）；安装 clangd 17+ 后自动恢复，无需重启服务',
+        503,
+        'LSP_UNAVAILABLE',
+      );
       throw this.failed;
     }
+    this.enginesMissing = false;
     const files = await listSourceFiles(this.repository.root);
     for (const engine of engines) {
       try {
@@ -406,6 +431,7 @@ stop() {
     this.client = null;
     this.engine = null;
     this.failed = null;
+    this.enginesMissing = false;
     this.initPromise = null;
     this.openDocuments.clear();
     this.openDocumentsVersions.clear();

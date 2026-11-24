@@ -261,7 +261,9 @@ async function pollLspStatus() {
   if (state.repository?.id !== repository.id) return;
   state.lsp = lsp;
   renderLspState();
-  if (state.lsp.initialized || (!state.lsp.available && state.lsp.detail)) {
+  // 引擎缺失型失败可恢复（clangd 装好后自动就绪），继续轮询；其它失败停止。
+  if (state.lsp.initialized
+    || (!state.lsp.available && state.lsp.detail && !state.lsp.recoverable)) {
     clearTimeout(state.lspTimer);
     state.lspTimer = null;
   }
