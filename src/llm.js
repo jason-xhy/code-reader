@@ -17,6 +17,18 @@ const MAX_QUESTION_LENGTH = 4000;
 const MAX_CONTEXT_CHARS = 42_000;
 const MAX_DIAGNOSTIC_BYTES = 200 * 1024;
 const ANTHROPIC_MAX_TOKENS = 8192;
+// 推理模型的 thinking token 也计入 max_tokens；复杂源码会让模型在思考阶段耗尽预算而
+// 完全不产生 text 内容块，结构化 JSON 输出不需要对外暴露思考过程，因此优先显式关闭。
+// 但部分网关（如阿里云 MaaS 的 GLM 推理模型）拒绝关闭：显式 disabled 会返回
+// "The value of the enable_thinking parameter is restricted to True"。官方 Anthropic
+// API 省略 thinking 字段等同关闭，而这类网关省略后走自身默认（开启），所以被拒绝后
+// 依次退回「省略字段」「显式开启」，总有一种组合能被当前网关接受。
+const ANTHROPIC_THINKING_MODES = [
+  { thinking: { type: 'disabled' } },
+  {},
+  { thinking: { type: 'enabled' } },
+];
+const THINKING_RESTRICTED_RE = /enable_thinking|thinking|思考/i;
 const SPEC_HINT_RE = /规范|协议|手册|文档|章节|寄存器|时序|spec|specification|register|protocol|manual|datasheet|errata/i;
 
 function truncateDiagnostic(value) {
@@ -179,58 +191,65 @@ async function requestCompletion(config, messages, systemPrompt = SYSTEM_PROMPT,
   if (config.protocol === 'chatgpt') return requestChatgpt(config.model, messages, systemPrompt, signal);
   const anthropic = config.protocol === 'anthropic';
   const url = anthropic ? anthropicMessagesUrl(config.baseUrl) : `${config.baseUrl}/chat/completions`;
-  const requestBody = anthropic
-    ? {
-        model: config.model,
-        max_tokens: ANTHROPIC_MAX_TOKENS,
-        // 推理模型的 thinking token 也计入 max_tokens；复杂源码会让模型在思考阶段
-        // 耗尽预算而完全不产生 text 内容块。结构化 JSON 输出不需要对外暴露思考过程。
-        thinking: { type: 'disabled' },
-        system: systemPrompt,
-        messages,
-      }
-    : {
-        model: config.model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...messages,
-        ],
-      };
-  const request = {
-    url,
-    protocol: anthropic ? 'anthropic' : 'openai',
-    model: config.model,
-    body: truncateDiagnostic(requestBody),
-  };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), COMPLETION_TIMEOUT_MS);
-  let response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: anthropic
-        ? {
-            'content-type': 'application/json',
-            'x-api-key': config.apiKey,
-            'anthropic-version': '2023-06-01',
-          }
-        : {
-            'content-type': 'application/json',
-            authorization: `Bearer ${config.apiKey}`,
-          },
-      body: JSON.stringify(requestBody),
-      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
-    });
-  } catch (error) {
-    clearTimeout(timer);
-    if (signal?.aborted) throw error;
-    const message = error.name === 'AbortError' ? 'LLM 请求超时' : `无法连接 LLM：${error.message}`;
-    throw new AppError(message, 502, 'LLM_NETWORK_ERROR', { request, error: message });
-  }
+  const thinkingModes = anthropic ? ANTHROPIC_THINKING_MODES : [{}];
+  let last;
+  for (let index = 0; index < thinkingModes.length; index += 1) {
+    const requestBody = anthropic
+      ? {
+          model: config.model,
+          max_tokens: ANTHROPIC_MAX_TOKENS,
+          ...thinkingModes[index],
+          system: systemPrompt,
+          messages,
+        }
+      : {
+          model: config.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...messages,
+          ],
+        };
+    const request = {
+      url,
+      protocol: anthropic ? 'anthropic' : 'openai',
+      model: config.model,
+      body: truncateDiagnostic(requestBody),
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), COMPLETION_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: anthropic
+          ? {
+              'content-type': 'application/json',
+              'x-api-key': config.apiKey,
+              'anthropic-version': '2023-06-01',
+            }
+          : {
+              'content-type': 'application/json',
+              authorization: `Bearer ${config.apiKey}`,
+            },
+        body: JSON.stringify(requestBody),
+        signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      if (signal?.aborted) throw error;
+      const message = error.name === 'AbortError' ? 'LLM 请求超时' : `无法连接 LLM：${error.message}`;
+      throw new AppError(message, 502, 'LLM_NETWORK_ERROR', { request, error: message });
+    }
 
-  let rawBody;
-  try { rawBody = await response.text(); } finally { clearTimeout(timer); }
-  const responseInfo = { status: response.status, body: truncateDiagnostic(rawBody) };
+    let rawBody;
+    try { rawBody = await response.text(); } finally { clearTimeout(timer); }
+    const responseInfo = { status: response.status, body: truncateDiagnostic(rawBody) };
+    last = { request, response, responseInfo, rawBody };
+    // 网关拒绝当前 thinking 设置（HTTP 400 且报文提到 thinking）时换下一种组合重试
+    if (response.status === 400 && index < thinkingModes.length - 1 && THINKING_RESTRICTED_RE.test(rawBody)) continue;
+    break;
+  }
+  const { request, response, responseInfo, rawBody } = last;
   if (!response.ok) {
     throw new AppError(`LLM 服务返回 HTTP ${response.status}：${rawBody.slice(0, 500)}`, 502, 'LLM_HTTP_ERROR', { request, response: responseInfo });
   }
@@ -250,7 +269,7 @@ async function requestCompletion(config, messages, systemPrompt = SYSTEM_PROMPT,
       if (info.stopReason === 'max_tokens') {
         message = `LLM 输出达到 max_tokens=${ANTHROPIC_MAX_TOKENS}，回答在 thinking 阶段被截断，未生成最终文本；请重试或换用非推理模型`;
       } else if (info.thinkingChars > 0) {
-        message = `LLM 只返回了 thinking 内容块（${info.thinkingChars} 字符），没有最终 text 内容块；请关闭 thinking 或换用非推理模型`;
+        message = `LLM 只返回了 thinking 内容块（${info.thinkingChars} 字符），没有最终 text 内容块；请重试或换用非推理模型`;
       } else if (info.blockTypes.length) {
         message = `LLM 服务响应没有 text 内容块（实际内容块：${info.blockTypes.join(', ')}）`;
       }

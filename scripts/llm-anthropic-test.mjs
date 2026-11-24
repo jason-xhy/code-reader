@@ -1,5 +1,5 @@
 // one-shot: code-reader Anthropic 协议回归测试（项目自带工具，非 agent 探索脚本）; no-generalize: 与 code-reader 的 LLM 请求/解析结构强绑定
-// grill: 成品检索=skill 库无 code-reader Anthropic 专项测试成品; 输入固定=本地 fetch 桩与固定源码; 步骤机械=调用 explainSource 并检查请求体/响应; 判读固定=thinking.disabled 与错误码; 失效场景=构造不出（仅本应用）
+// grill: 成品检索=skill 库无 code-reader Anthropic 专项测试成品; 输入固定=本地 fetch 桩与固定源码; 步骤机械=调用 explainSource 并检查请求体/响应; 判读固定=thinking.disabled、网关拒绝后的降级链与错误码; 失效场景=构造不出（仅本应用）
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import { createServer } from 'node:http';
@@ -37,6 +37,14 @@ const stubFetch = async (url, options) => {
       content: [{ type: 'thinking', thinking: '思考内容'.repeat(100) }],
       stop_reason: 'max_tokens',
     }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (String(lastMessage).includes('TRIGGER_THINKING_REJECTED') && body.thinking?.type === 'disabled') {
+    // 模拟阿里云 MaaS 等网关：推理模型不允许关闭 thinking
+    return new Response(JSON.stringify({
+      request_id: 'stub',
+      code: 'InvalidParameter',
+      message: 'The value of the enable_thinking parameter is restricted to True.',
+    }), { status: 400, headers: { 'content-type': 'application/json' } });
   }
   return new Response(JSON.stringify({
     content: [
@@ -88,6 +96,13 @@ try {
   assert(String(error?.message || '').includes('max_tokens'), '错误信息说明 max_tokens 截断', error?.message);
   assert(error?.details?.stopReason === 'max_tokens', '错误详情保留 stop_reason', JSON.stringify(error?.details));
   assert(error?.details?.response?.status === 200, '错误详情保留 HTTP 200 原文', String(error?.details?.response?.status));
+
+  const rejected = await explainSource(source, 'test.c', 3, 'TRIGGER_THINKING_REJECTED 这一行做什么？');
+  assert(rejected.explanation.overview === '概览', '网关拒绝关闭 thinking 时自动降级成功');
+  const rejectedCalls = calls.slice(2);
+  assert(rejectedCalls.length === 2, 'thinking 被拒后重试一次', `calls=${rejectedCalls.length}`);
+  assert(rejectedCalls[0].body.thinking?.type === 'disabled', '降级前先显式关闭 thinking', JSON.stringify(rejectedCalls[0].body.thinking));
+  assert(rejectedCalls[1].body.thinking === undefined, '重试请求省略 thinking 字段', JSON.stringify(rejectedCalls[1].body.thinking));
 } finally {
   await new Promise(resolve => server.close(resolve));
   rmSync(dataDir, { recursive: true, force: true });
