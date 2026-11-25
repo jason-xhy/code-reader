@@ -8,7 +8,7 @@
 
 - 打开本地或远程 Git 仓库，浏览文件树、分支、Tag 和 Git 状态
 - 工作区：可同时打开多个仓库（例如 `linux` 与 `klinux-v/klinux`），用顶部的仓库页签切换（`Ctrl+Alt+[` / `Ctrl+Alt+]` 前后切换，`Ctrl+Alt+Shift+1..9` 直达第 N 个页签）；**每个页签上方直接标出直达组合键**，工作区栏也显示前后切换键。每个仓库保留各自的文件、光标位置和目录折叠状态，后台预载并缓存代码树，大仓切换不再重扫文件列表；预载建树按空闲时间分片，j/k 导航不被后台扫描阻塞。页面刷新（含服务重启后重新打开页面）会自动恢复到上次的仓库、文件与行列位置，无需重新打开或从「历史」手动恢复
-- 侧栏默认收起：代码树与「分析与解释」以覆盖层出现，鼠标移到左右边缘（或键盘聚焦过滤框/文件树）时滑入，移开自动收起；代码区始终满宽，面板显隐不触发编辑器/终端重排
+- 侧栏默认收起：代码树与「分析与解释」在鼠标移到左右边缘（或键盘聚焦过滤框/文件树）时滑入，移开自动收起。侧栏滑入或钉住时代码区为其让位（收起后恢复满宽）；quickpick 引用/搜索窗口与各类对话框才是悬浮覆盖层，不挤压代码区
 - 侧栏快捷键：`Ctrl+Alt+B` 去代码树，`Ctrl+Alt+I` 去「分析与解释」——面板已打开但焦点在代码区时，按一下把焦点送进面板（不关闭）；焦点已在面板内时再按一次才收起。面板打开后钉住，鼠标移开不收回；键盘焦点在面板内（含鼠标点击解释窗口后）也保持展开。编辑器状态栏与 nvim 工具条直接显示这两个组合键。代码窗口上方左侧显示「← Ctrl+Alt+B 打开代码树」，右侧显示「Ctrl+Alt+I 打开代码解释窗口 →」，点击箭头提示也可进/出面板
 - 全键盘导航（easymotion / sneak 风格）：任意窗口按 `Ctrl+Alt+K` 给所有可操作元素与代码行打字母标签，输入标签即点击/聚焦（代码行则把光标移到该行）；按 `Ctrl+Alt+F` 输入两个字符，视口内匹配处出现标签，输入标签即跳转（`Ctrl+Alt+L` 被 UKUI 系统锁屏占用，故改用 F）。标签层自动限定在当前顶层窗口（原生对话框、提交详情、引用列表），不会点到遮罩后面的元素；打开侧栏/对话框后焦点自动跟进；历史菜单/文件树右键菜单支持 ↑/↓ + Enter，Esc 返回；分隔条聚焦后 ←/→ 调整宽度
 - 任意窗口 Vim 键（解释栏 / 函数提交历史 / 提交详情 / 所有对话框 / 菜单）：`j`/`k` 在可操作项之间移动，或（焦点在阅读容器上时）逐行滚动，支持计数（`5j`）；函数提交历史是列表容器，焦点在历史上时 `j`/`k` 始终在提交项之间移动（不会变成滚动文本）；`Ctrl+d`/`Ctrl+u` 半屏、`Ctrl+f`/`Ctrl+b`/`PageDown`/`PageUp` 整屏（阅读区还可用 `Space`/`Shift+Space`）；`gg`/`G` 跳到首个/最后一个目标，`12gg`/`12G` 跳到第 12 个，阅读区则为顶部/底部；`H`/`M`/`L` 首/中/末项（阅读区为顶部/中部/底部）；`0`/`^`/`$` 首/末项（阅读区横向滚到最左/最右）；`o` 激活当前项，`Enter` 走浏览器原生激活（提交详情里先 `j` 到「Diff」再 `Enter` 展开）；`/` 在当前窗口内搜索，`Enter` 定位，`n`/`N` 下一个/上一个，`Esc` 清除高亮并回到阅读模式。解释栏打开后默认是阅读模式，`Tab` 或点击链接进入项列表模式，`Esc` 先退回阅读模式再回编辑器；文件树与引用列表同样支持计数与翻屏，文件树里 `/` 直接跳到过滤框
@@ -21,6 +21,8 @@
 - `Ctrl-o` 跳回上一个跳转位置，`Ctrl-i` 跳到较新的跳转位置（跨文件的应用级跳转栈，gd/gr 后可直接回退）
 - 阅读路径：编辑器上方记录最近访问的文件（面包屑），**按文件合并——同一文件只显示最新访问的那一行**；点击芯片即可回到该位置。`Ctrl+Alt+R`（或点面包屑末尾的「列表」）打开完整列表：最近访问的排在前面，`j`/`k` 或 `↑`/`↓` 选择、`Enter` 跳转、`Esc` 取消；也可用 Vim `:trail`
 - LSP 跳转定义 / 查找引用；LSP 不可用或无结果时，定义跳转自动回退到 Git 文本检索；跳转栈
+- 引用查找（gr）在 LSP 结果之外合并 Git 文本检索兜底：冷索引或引擎不可用时仍能列出跨文件调用点；`CONFIG_*` 符号的引用包含 include/generated/autoconf.h 里的定义行（gitignored 文件可直接打开）
+- 内核树已解析 kconfig 时，编辑器把「未生效的 #if/#elif/#else 分支」按取值半透明置灰（如 `#if defined(CONFIG_X)` 且 X=n 的分支）；表达式含不在 kconfig 里的符号（DEBUG 等）的分支保守不置灰；未解析或非内核树无此行为
 - 引用列表用 `j`/`k` 或 `↑`/`↓` 浏览时保留上一份上下文预览并预取相邻项，预览高度固定，不会闪回「正在读取」或上下跳动
 - `\e` 聚焦文件树（`j`/`k` 选择（可 `5j`）、`Ctrl+d`/`Ctrl+u`/`Ctrl+f`/`Ctrl+b` 翻屏、`H`/`M`/`L` 首/中/末、`gg`/`G` 首个/最后一个文件、`Enter` 打开、`q` 返回、`/` 跳到过滤框），`:e` / `:vi` 按路径打开文件并支持 `Tab` 补全
 - 代码树过滤支持键盘：在过滤框内用 `↑`/`↓` 选择候选，`Enter` 打开；只有一个候选时直接回车打开
@@ -69,6 +71,11 @@ scripts/check-syntax.mjs  语法检查：遍历源码目录，新增模块无需
 - Node.js >= 20
 - Git
 - Linux/macOS 下安装 `node-pty` 时若无预编译包，需要 Python 3、make、g++ 编译
+- 内核配置解析默认用树内 `make`（首次需 flex/bison）；宿主机缺 make/flex/bison
+  （如 macOS 默认环境）时自动回退**内置纯 JS Kconfig 解析器**，无需安装构建工具。
+  `CODE_READER_KCONFIG_ENGINE=make|js|auto` 可指定引擎；JS 引擎不执行 Kconfig 里的
+  编译器探测命令（CC_IS_GCC 等按 n 处理），其余取值与 make 高度一致
+  （klinux arm64/generic_defconfig 对照一致率 99%+，见 `node scripts/kconfig-js-check.mjs`）
 - 可选：`nvim`（nvim 面板；可用 `CODE_READER_NVIM=/path/to/nvim` 指定）
 - Linux 可选：`python3-keyring` + Secret Service（GNOME Keyring 等），用于保存 API Key
 - 可选：`clangd` 18+、`pdftotext`（分别用于 LSP 和 PDF 文档索引）
@@ -121,7 +128,7 @@ npm run test:browser  # 浏览器验收：工作区/侧栏/过滤/引用预览/3
 
 `test:browser` 默认只读检查（`CODE_READER_URL` 可改地址，`CHROME_BIN` 可指定 Chrome）；加 `-- --switch` 会额外验证工作区快捷键、仓库切换与切换后刷新，结束后自动恢复原当前仓库。
 
-专项回归：`node scripts/question-regression.mjs`、`node scripts/docs-regression.mjs`、`node scripts/workspace-regression.mjs`、`node scripts/theme-regression.mjs`。端口冲突时可设置 `CODE_READER_TEST_PORT` 和 `CODE_READER_TEST_LLM_PORT`；旧 `E2E_LLM_PORT` 仍兼容。
+专项回归：`node scripts/question-regression.mjs`、`node scripts/docs-regression.mjs`、`node scripts/workspace-regression.mjs`、`node scripts/theme-regression.mjs`、`node scripts/kconfig-js-check.mjs`（内置 JS Kconfig 解析器与 make 真值的取值对照，需先解析过一次内核配置）。端口冲突时可设置 `CODE_READER_TEST_PORT` 和 `CODE_READER_TEST_LLM_PORT`；旧 `E2E_LLM_PORT` 仍兼容。
 
 [2026-11-22 纯键盘测试、修复边界和验证报告](bug-reports/keyboard-20261122/README.md)记录了 GUI 与自动化证据及限制。
 

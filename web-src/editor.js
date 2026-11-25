@@ -1,6 +1,6 @@
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: CM6 编辑器层与 code-reader UI 契约强绑定
 // grill: 成品检索=skill 库无 code-reader CM6 编辑器成品; 输入固定=固定 createEditor 选项与 DOM id; 步骤机械=构建 extensions/绑定 vim; 判读固定=CM6 state 与 vim 事件; 失效场景=构造不出（仅本应用）
-import { Compartment, EditorState, Prec } from '@codemirror/state';
+import { Compartment, EditorState, Prec, StateEffect, StateField } from '@codemirror/state';
 import {
   Decoration,
   EditorView,
@@ -91,13 +91,80 @@ const C_TOKEN_TABLE = {
   memberName: C_TOKEN_TAGS.memberName,
   typeNameToken: C_TOKEN_TAGS.typeNameToken,
   builtinType: C_TOKEN_TAGS.builtinType,
+  // 预处理指令词与 #define 宏名：整条指令不再整体走 meta（注释灰）。
+  preproc: tags.meta,
+  macroName: tags.macroName,
 };
+
+// clike 的 cppHook 会把整条 # 指令（含 `\` 续行）整体返回 "meta"，主题里
+// meta → 注释灰，printk.h 的 #define pr_debug 区域整段与注释同灰。这里在
+// token 包装层拦截行首 `#`：自己消费「# + 指令词」返回 preproc；#define 的
+// 宏名单独一个 macroName token；行内剩余内容（含续行）交回 parser.token
+// 正常分词，不再进入 cppHook 的续行 meta 状态。
+const C_PREPROC_DIRECTIVE_RE = /^#\s*[A-Za-z_][A-Za-z0-9_]*/;
+const C_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*/;
+// #include 的参数：`<…>` 按一个 string token 消费（"…" 交正常分词，本来
+// 就是 string）。
+const C_INCLUDE_ANGLE_RE = /^[^>\n]*>?/;
+
+function isIncludeDirective(directive) {
+  return directive === 'include' || directive === 'include_next' || directive === 'import';
+}
 
 function refineC(parser) {
   return {
     ...parser,
     tokenTable: C_TOKEN_TABLE,
     token(stream, state) {
+      // 指令词与宏名必须同一条逻辑行：换行即作废待取状态（防御 #define 行尾
+      // 无宏名、指令行跨行拼接等边界）。
+      if (stream.sol()) {
+        state.crPendingName = null;
+      }
+      // 行首 # 拦截：state.tokenize 非空说明正处于多行注释/字符串内部，行首的
+      // # 只是普通字符，交回 parser。
+      if (!state.tokenize && stream.sol() && /^\s*#/.test(stream.string)) {
+        stream.eatSpace();
+        if (stream.match(C_PREPROC_DIRECTIVE_RE)) {
+          // 前导空白与指令词在同一个 token 里（current 含空白，替换时一并剥掉）。
+          const directive = stream.current().replace(/^\s*#\s*/, '');
+          if (directive === 'define') state.crPendingName = 'define';
+          else if (isIncludeDirective(directive)) state.crPendingName = 'include';
+          state.crPrevious = 'preproc';
+          state.prevToken = 'preproc';
+          return 'preproc';
+        }
+        // 防御：# 后不是指令词（如 #!）——只消费 #。
+        stream.next();
+        state.crPrevious = 'preproc';
+        state.prevToken = 'preproc';
+        return 'preproc';
+      }
+      if (state.crPendingName) {
+        const pending = state.crPendingName;
+        state.crPendingName = null;
+        stream.eatSpace();
+        if (pending === 'define' && stream.match(C_IDENTIFIER_RE)) {
+          state.crPrevious = 'macroName';
+          state.prevToken = 'macroName';
+          return 'macroName';
+        }
+        if (pending === 'include' && stream.peek() === '<') {
+          stream.match(C_INCLUDE_ANGLE_RE);
+          state.crPrevious = 'preproc';
+          state.prevToken = 'string';
+          return 'string';
+        }
+        // 防御：#define/#include 行尾没有参数——吞掉残余空白按 preproc 收尾，
+        // 不能空手返回（StreamLanguage 对零长度 token 会抛错）。
+        if (stream.eol()) {
+          stream.skipToEnd();
+          state.crPrevious = 'preproc';
+          state.prevToken = 'preproc';
+          return 'preproc';
+        }
+        // 行内还有别的（如 #include MACRO）：交正常分词。
+      }
       const previous = state.crPrevious;
       const style = parser.token(stream, state);
       let refined = style;
@@ -129,6 +196,43 @@ function refineC(parser) {
 }
 
 const C_PARSER = refineC(cpp);
+
+// ---- 未生效 #if 分支置灰（kconfig 取值由 app.js 算好行区间注入）----
+
+// 行区间 → 行装饰：只在行边界挂 class，内容照常渲染（半透明而非隐藏）。
+function buildConfigInactiveDecorations(ranges, doc) {
+  const decorations = [];
+  for (const range of Array.isArray(ranges) ? ranges : []) {
+    const from = Math.floor(Number(range?.from) || 1);
+    const to = Math.floor(Number(range?.to) || from);
+    const first = Math.max(1, Math.min(from, to));
+    const last = Math.min(doc.lines, Math.max(from, to));
+    for (let line = first; line <= last; line += 1) {
+      decorations.push(Decoration.line({ class: 'cm-config-inactive' }).range(doc.line(line).from));
+    }
+  }
+  return decorations.length ? Decoration.set(decorations, true) : Decoration.none;
+}
+
+const setConfigInactiveEffect = StateEffect.define();
+
+const configInactiveField = StateField.define({
+  create() {
+    return Decoration.none;
+  },
+  update(value, transaction) {
+    // 文档一变（编辑）即清空：行区间随即失效，等下一次 openFile 后重算；
+    // 换文件走 setState，字段从 create() 重新开始，天然清空。
+    if (transaction.docChanged) return Decoration.none;
+    for (const effect of transaction.effects) {
+      if (effect.is(setConfigInactiveEffect)) {
+        return buildConfigInactiveDecorations(effect.value, transaction.state.doc);
+      }
+    }
+    return value;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
 
 const MODES_BY_EXTENSION = new Map(Object.entries({
   c: C_PARSER,
@@ -642,6 +746,7 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
       languageCompartment.of(languageFor(filePath)),
       themeCompartment.of(themeExtensionsFor(currentTheme)),
       displayCompartment.of(displayExtensions()),
+      configInactiveField,
       appKeymap,
       VIM_TAB_KEYMAP,
       textInputGuard(),
@@ -1240,6 +1345,13 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     return paletteFor(currentTheme);
   }
 
+  // 未生效 #if 分支置灰：ranges 为 [{from, to}] 行号区间（1 基、闭区间），
+  // 传空数组/undefined 清空。app.js 在 openFile/selectFile 后按 kconfig 取值计算。
+  function setConfigInactiveRanges(ranges) {
+    if (!view) return;
+    view.dispatch({ effects: setConfigInactiveEffect.of(Array.isArray(ranges) ? ranges : []) });
+  }
+
   updateVimMode();
   return {
     openFile,
@@ -1256,6 +1368,7 @@ export function createEditor({ onCursorLine, onAsk, onGotoDefinition, onGotoRefe
     focus,
     setTheme,
     setProfile,
+    setConfigInactiveRanges,
     snapshot,
     visibleMatches,
     visibleLines,

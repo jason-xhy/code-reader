@@ -23,6 +23,9 @@ export const state = {
   explaining: false,
   lsp: { available: false, engine: null, initialized: false, detail: '' },
   lspTimer: null,
+  // 当前仓库的 kconfig 取值（/kconfig/values 接口）：null = 未加载/不支持，
+  // { available, stale, values } = 已加载；置灰功能只在 !stale && values 时启用。
+  kconfigValues: null,
   branches: [],
   busy: false,
   noticeAction: null,

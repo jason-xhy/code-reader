@@ -154,16 +154,17 @@ export async function listSourceFiles(root) {
   return output.split('\0').filter(Boolean);
 }
 
-export async function readSource(root, filePath) {
-  root = await realpath(root);
-  validateRelativePath(filePath);
-  const listing = await runGit(['ls-files', '-coz', '--exclude-standard', '--', filePath], { cwd: root });
-  if (!listing.split('\0').filter(Boolean).includes(filePath)) {
-    throw new AppError('文件不在仓库代码树中', 404, 'FILE_NOT_FOUND');
-  }
+// 读磁盘的实际校验与读取。resolve 与 realpath 两次 assertInside：前者拦住 ../
+// 与符号链接路径，后者确保符号链接目标仍在仓库内。
+async function readSourceFromDisk(root, filePath) {
   const candidate = path.resolve(root, filePath);
   assertInside(root, candidate);
-  const resolved = await realpath(candidate);
+  let resolved;
+  try {
+    resolved = await realpath(candidate);
+  } catch {
+    throw new AppError('文件不存在', 404, 'FILE_NOT_FOUND');
+  }
   assertInside(root, resolved);
   const info = await stat(resolved);
   if (!info.isFile()) throw new AppError('目标不是普通文件', 400, 'NOT_A_FILE');
@@ -185,6 +186,16 @@ export async function readSource(root, filePath) {
     lines: content ? Math.max(lineCount, 1) : 0,
     truncated: false,
   };
+}
+
+export async function readSource(root, filePath) {
+  root = await realpath(root);
+  validateRelativePath(filePath);
+  // 旧实现要求 `git ls-files -co --exclude-standard` 列出该文件，gitignored 的
+  // 生成文件（内核树解析配置后的 include/generated/autoconf.h、.config 等）
+  // 会被判 404，引用列表跳不过去。改为直接读磁盘并做同样的仓库内/普通文件/
+  // ≤2MiB/UTF-8 校验：git 跟踪与 gitignored 文件统一走这条路，磁盘上不存在才 404。
+  return readSourceFromDisk(root, filePath);
 }
 
 // 引用预览：目标行前后 N 行 + 所在函数（Caller）范围，供 gr 弹窗的另一窗口显示。

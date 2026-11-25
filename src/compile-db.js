@@ -1,12 +1,13 @@
 // one-shot: code-reader 应用源码（本项目固定模块，非 agent 探索脚本）; no-generalize: 编译数据库生成与 LSP 层强绑定
 // grill: 成品检索=skill 库无 code-reader 编译数据库成品; 输入固定=仓库根+文件列表+仓库 id; 步骤机械=探测/生成/清理固定路径; 判读固定=文件存在性; 失效场景=构造不出（仅本应用）
-import { access, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { dataPath } from './paths.js';
 
 const lspDataRoot = dataPath('lsp');
 const SOURCE_EXTENSIONS = new Set(['.c', '.cc', '.cpp', '.cxx']);
 const CPP_EXTENSIONS = new Set(['.cc', '.cpp', '.cxx']);
+const FINGERPRINT_FILE = 'fingerprint.txt';
 
 async function exists(target) {
   try {
@@ -17,9 +18,30 @@ async function exists(target) {
   }
 }
 
+async function readTextFile(target) {
+  try {
+    return await readFile(target, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// 原子替换写：temp + rename，与 compile_commands.json 生成同款写法。
+async function writeAtomic(target, content) {
+  const temporary = `${target}.tmp-${process.pid}`;
+  await writeFile(temporary, content);
+  await rename(temporary, target);
+}
+
+// 清理重置（kconfig 重解析后触发）：只删 compile_commands.json 与指纹，
+// 保留 .cache/ 子目录——那是 clangd 的后台索引分片（按 context-hash 区分编译
+// 参数），内核树数万文件建一次索引约一小时，重解析只是换了编译参数，旧分片
+// 仍可复用，整目录删除会把索引进度全部清零。
 export async function clearCompilationDatabase(id) {
   if (typeof id !== 'string' || !/^[a-z0-9-]+$/i.test(id)) return;
-  await rm(path.join(lspDataRoot, id), { recursive: true, force: true });
+  const directory = path.join(lspDataRoot, id);
+  await rm(path.join(directory, 'compile_commands.json'), { force: true });
+  await rm(path.join(directory, FINGERPRINT_FILE), { force: true });
 }
 
 export async function prepareCompilationDatabase(root, files, id, options = {}) {
@@ -28,11 +50,6 @@ export async function prepareCompilationDatabase(root, files, id, options = {}) 
   }
   const directory = path.join(lspDataRoot, id);
   const target = path.join(directory, 'compile_commands.json');
-  if (await exists(target)) {
-    return { directory, generated: true };
-  }
-  await mkdir(directory, { recursive: true });
-
   // 架构优先级：kconfig 解析结果（用户设置）> 环境变量 > x86 默认。
   const arch = String(options.arch || process.env.KERNEL_ARCH || 'x86').replace(/[^a-z0-9_-]/gi, '');
   const includeDirs = [
@@ -54,6 +71,17 @@ export async function prepareCompilationDatabase(root, files, id, options = {}) 
     forceIncludes.push('-include', kconfigHeader);
   }
 
+  // 指纹：仓库根 + 架构 + autoconf 注入与否。指纹不变时直接复用现有
+  // compile_commands.json，避免 LSP 会话重建时无谓重写（也避免指纹文件自身
+  // 的写放大）；变化才重新生成。
+  const fingerprint = [root, arch, forceIncludes.length ? 'autoconf' : 'no-autoconf'].join('|');
+  if (await exists(target)) {
+    if ((await readTextFile(path.join(directory, FINGERPRINT_FILE))) === fingerprint) {
+      return { directory, generated: true };
+    }
+  }
+  await mkdir(directory, { recursive: true });
+
   const entries = [];
   for (const file of files) {
     const extension = path.extname(file);
@@ -67,8 +95,7 @@ export async function prepareCompilationDatabase(root, files, id, options = {}) 
     });
   }
 
-  const temporary = `${target}.tmp-${process.pid}`;
-  await writeFile(temporary, JSON.stringify(entries));
-  await rename(temporary, target);
+  await writeAtomic(target, JSON.stringify(entries));
+  await writeAtomic(path.join(directory, FINGERPRINT_FILE), fingerprint);
   return { directory, generated: true };
 }

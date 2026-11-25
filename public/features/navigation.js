@@ -309,10 +309,15 @@ export async function gotoReferences() {
     }
     window.__crPanels?.hideAll();
     noteFocusIntent();
+    // 文本检索补进来的结果（冷索引/LSP 之外的 git grep 命中）在标题里注明数量。
+    const extra = Number(data.textExtra) || 0;
+    const title = extra > 0
+      ? `${data.locations.length} 个引用（含 ${extra} 项文本检索） · j/k 或 ↑↓ 选择 · Enter 跳转 · Esc 取消`
+      : `${data.locations.length} 个引用 · j/k 或 ↑↓ 选择 · Enter 跳转 · Esc 取消`;
     editor.showQuickpick(data.locations, (picked) => {
       jumpTo(picked);
     }, {
-      title: `${data.locations.length} 个引用 · j/k 或 ↑↓ 选择 · Enter 跳转 · Esc 取消`,
+      title,
       preview: loadContextPreview,
     });
   } catch (error) {

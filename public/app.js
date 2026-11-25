@@ -89,6 +89,11 @@ import {
   openKernelConfigDialog,
   refreshKernelStatus,
 } from './features/kernel-config.js';
+import {
+  applyConfigDim,
+  initConfigDimFeature,
+  refreshConfigValues,
+} from './features/config-dim.js';
 
 // v2：本地主题成为默认选项后重置旧版本保存的配色选择，避免历史
 // localStorage（多为早期 one-dark）压过「默认本地」。用户重新选择后照常持久化。
@@ -116,6 +121,8 @@ function renderSource({ focus = true } = {}) {
   if (hasSource) {
     editor.show();
     editor.openFile(state.currentFile, state.source.content, { focus });
+    // 未生效 #if 分支置灰：文件内容就绪后按 kconfig 取值计算区间。
+    applyConfigDim();
   } else {
     editor.hide();
   }
@@ -199,6 +206,8 @@ function applyRepositoryPayload(data, { collapsed = null, branches = [], prepare
   state.status = data.status || {};
   // 设置菜单的内核配置状态行随仓库刷新（取值解析按仓库独立保存）。
   refreshKernelStatus();
+  // 置灰用的取值独立拉取（列表接口不带 values）；到达后对当前文件补一次计算。
+  refreshConfigValues();
   state.tree = prepared?.tree || buildTree(data.files);
   const storedCollapsed = collapsed || restoreCollapsed();
   state.collapsed = storedCollapsed || new Set();
@@ -353,6 +362,7 @@ initDialogsFeature({ loadRepository });
 initKeymapFeature();
 initSettingsMenu();
 initKernelConfig();
+initConfigDimFeature({ api });
 registerKernelConfigOpener(openKernelConfigDialog);
 initWorkspaceFeature({ loadRepository, selectFile, applyRepositoryPayload, renderSource, closeNvim });
 initSearchFeature({ jumpTo });

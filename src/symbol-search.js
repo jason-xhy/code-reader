@@ -2,12 +2,17 @@
 // grill: 成品检索=skill 库无 code-reader 文本符号检索成品; 输入固定=仓库根/文件/行列/内容; 步骤机械=取词+git grep+打分/去重; 判读固定=定义形态与命中行; 失效场景=构造不出（仅本应用）
 // 文本检索兜底：LSP 无结果时，按定义形态打分在源码中定位符号。
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { readSource, runGit } from './git.js';
 
 const MAX_RESULTS = 12;
 const MIN_DEFINITION_SCORE = 60;
 const SOURCE_PATHS = ['*.c', '*.h', '*.cc', '*.cpp', '*.hpp', '*.S', '*.s'];
 const IDENTIFIER_RE = /[A-Za-z_][A-Za-z0-9_]*/g;
+// gr 文本检索：git grep 全词命中很多（内核树 connect 3300+ 行），列表保持
+// 可浏览的上限；命中行按「当前文件所在子目录优先」排序后再截断，保证
+// 同子系统的调用点（如 input.c 的 handler->connect）排在前面。
+const MAX_REFERENCE_RESULTS = 300;
 // Kconfig 文件的 git pathspec：`Kconfig*` 只匹配根级，`*Kconfig*` 才能命中
 // 任意深度的 lib/Kconfig.debug、arch/arm64/Kconfig 等。
 const KCONFIG_PATHS = ['*Kconfig*'];
@@ -182,4 +187,112 @@ export async function searchSymbolDefinitions({ root, filePath, line, character,
   if (!identifier || identifier.length < 2) return [];
   if (!isDefinitionTarget(text.split('\n')[line - 1] || '', identifier)) return [];
   return searchDefinitionsForIdentifier({ root, identifier, filePath });
+}
+
+// ---- gr 文本检索兜底/补充 ----
+
+// git grep 的 path:line:content → { path, line, character }；character 落在
+// 本行第一个词匹配处（0 基列，与 LSP 位置同构）。
+function parseGrepLine(entry, identifier) {
+  const match = /^(.*?):(\d+):(.*)$/.exec(entry);
+  if (!match) return null;
+  const [, candidatePath, candidateLine, lineSource] = match;
+  if (!candidatePath || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) return null;
+  const word = new RegExp(`\\b${escapeRegExp(identifier)}\\b`).exec(lineSource);
+  return {
+    path: path.normalize(candidatePath),
+    line: Number(candidateLine),
+    character: word ? word.index : 0,
+  };
+}
+
+// 引用排序：按「与当前文件目录的共享前缀深度」分桶——当前文件所在目录的
+// 命中最前，逐级向外（父目录、顶层目录、其余）保持 git grep 的路径序。
+// 冷索引场景下跨文件调用点是否进列表很依赖这个排序（全词 connect 在内核树
+// 命中 3000+ 行，朴素截断会漏掉 drivers/input 的调用点；按子目录分桶后
+// drivers/input 的 87 处命中排在前 90 以内）。
+function referencePrioritySort(matches, filePath) {
+  const own = (filePath || '').split('/');
+  own.pop();
+  const bucket = (candidate) => {
+    const parts = candidate.path.split('/');
+    parts.pop();
+    let shared = 0;
+    while (shared < own.length && parts[shared] === own[shared]) shared += 1;
+    return own.length - shared;
+  };
+  return matches
+    .map((match, index) => ({ match, index, rank: bucket(match) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((entry) => entry.match);
+}
+
+// CONFIG_* 是 gitignored 的 include/generated/autoconf.h 里的宏，git grep
+// 搜不到（不在索引里）：直接读该文件找 `#define CONFIG_…` 行补进结果。
+async function autoconfReferences(root, identifier) {
+  const autoconfPath = 'include/generated/autoconf.h';
+  let content;
+  try {
+    content = await readFile(path.join(root, autoconfPath), 'utf8');
+  } catch {
+    return [];
+  }
+  const defineRe = new RegExp(`^#define\\s+(${escapeRegExp(identifier)})\\b`);
+  const results = [];
+  const lines = content.split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = defineRe.exec(lines[index]);
+    if (!match) continue;
+    // 宏名列起点：#define + 空白之后的第一个字符（match[0] 恰好到宏名末尾）。
+    results.push({ path: autoconfPath, line: index + 1, character: match[0].length - identifier.length });
+    if (results.length > 32) break;
+  }
+  return results;
+}
+
+export async function searchSymbolReferences({ root, filePath, line, character, content }) {
+  let text = content;
+  if (typeof text !== 'string') {
+    try {
+      text = (await readSource(root, filePath)).content;
+    } catch {
+      return [];
+    }
+  }
+  const identifier = wordAt(text, line, character);
+  if (!identifier || identifier.length < 2) return [];
+  const matches = [];
+  const seen = new Set();
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) {
+    let lines = [];
+    try {
+      // -w -F：全词、按字面匹配（标识符只允许 C 词法字符，参数数组直传 git）。
+      const stdout = await runGit(
+        ['grep', '-n', '-I', '-w', '-F', '--no-color', '-e', identifier, '--', ...SOURCE_PATHS],
+        { cwd: root, timeout: 20_000 },
+      );
+      lines = stdout.split('\n');
+    } catch {
+      lines = [];
+    }
+    for (const entry of lines) {
+      if (!entry) continue;
+      const location = parseGrepLine(entry, identifier);
+      if (!location) continue;
+      const key = `${location.path}:${location.line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matches.push(location);
+    }
+  }
+  const sorted = referencePrioritySort(matches, filePath).slice(0, MAX_REFERENCE_RESULTS);
+  if (/^CONFIG_[A-Z0-9_]+$/.test(identifier)) {
+    for (const location of await autoconfReferences(root, identifier)) {
+      const key = `${location.path}:${location.line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sorted.push(location);
+    }
+  }
+  return sorted;
 }

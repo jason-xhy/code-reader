@@ -3,6 +3,7 @@
 import { api } from '../core/api.js';
 import { elements } from '../core/dom.js';
 import { state, noteFocusIntent } from '../core/state.js';
+import { refreshConfigValues } from './config-dim.js';
 
 let resolving = false;
 let defconfigMap = {};
@@ -117,6 +118,8 @@ async function resolve(event) {
     elements.kernelProgress.textContent = `已解析 ${data.valuesCount} 项 · ${arch}/${defconfig}`
       + (warnings ? `（${warnings}）` : '');
     updateSettingsKernelStatus(`${arch}/${defconfig} · ${data.valuesCount} 项`);
+    // 取值已变化：重新拉取并刷新未生效分支的置灰。
+    refreshConfigValues();
   } catch (error) {
     elements.kernelError.textContent = error.message;
     elements.kernelProgress.textContent = '';

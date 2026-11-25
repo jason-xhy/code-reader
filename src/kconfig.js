@@ -14,6 +14,8 @@ import path from 'node:path';
 import { AppError } from './errors.js';
 import { dataPath } from './paths.js';
 import { runGit } from './git.js';
+import { parseKconfigTree } from './kconfig/parser.js';
+import { autoconfEntries, evaluateKconfig, formatAutoconfHeader, formatConfigFile, readUserValues } from './kconfig/evaluate.js';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -23,9 +25,10 @@ const MAKE_TIMEOUT_MS = 300_000;
 const SYNCCONFIG_TIMEOUT_MS = 120_000;
 // 架构/defconfig 同时是 make 目标与路径片段：白名单字符集，spawn 本就 shell:false。
 const NAME_RE = /^[A-Za-z0-9._-]+$/;
-// .config 取值行 / 未设置行。
-const VALUE_RE = /^CONFIG_([A-Z0-9_]+)=(.*)$/;
-const NOT_SET_RE = /^#\s*CONFIG_([A-Z0-9_]+) is not set$/;
+// .config 取值行 / 未设置行。Kconfig 符号允许小写（如 SENSORS_SHT3x、
+// MT76x02_LIB），字符集不能只按大写筛，否则这些符号会从取值表里丢失。
+const VALUE_RE = /^CONFIG_([A-Za-z0-9_]+)=(.*)$/;
+const NOT_SET_RE = /^#\s*CONFIG_([A-Za-z0-9_]+) is not set$/;
 const STORE_TTL_MS = 10 * 60_000;
 
 const stores = new Map();
@@ -232,6 +235,58 @@ async function pruneBackups(dir) {
   }
 }
 
+// 引擎选择：make（树内 Kconfig 工具链）/ js（内置纯 JS 解析器）/ auto（默认，
+// make 失败且是工具链缺失型错误时回退 JS）。便于无 flex/bison 的宿主机测试。
+function kconfigEngine() {
+  const value = (process.env.CODE_READER_KCONFIG_ENGINE || 'auto').trim().toLowerCase();
+  return value === 'make' || value === 'js' ? value : 'auto';
+}
+
+function isToolchainMissing(error) {
+  if (error instanceof AppError && (error.code === 'KCONFIG_TOOLS_MISSING' || error.code === 'KCONFIG_MAKE_UNAVAILABLE')) {
+    return true;
+  }
+  const message = String(error?.message || error);
+  return /flex|bison|lex|yacc/i.test(message) && /not found|no such file|找不到|无法启动/i.test(message);
+}
+
+// 内置纯 JS 解析器：解析 Kconfig 树 → defconfig 作为用户值 → 不动点评估 →
+// 写回 .config 与 include/generated/autoconf.h。宿主机缺少 make/flex/bison
+// （如 macOS 默认环境）时的跨平台回退路径。
+async function resolveWithJs(repository, { arch, defconfig }, extraWarnings = []) {
+  const root = repository.root;
+  const model = await parseKconfigTree(root, { arch });
+  const defconfigPath = path.join(root, 'arch', arch, 'configs', defconfig);
+  await readUserValues(defconfigPath, model, model.warnings);
+  const { values, warnings, mainmenu } = evaluateKconfig(model);
+  if (!Object.keys(values).length) {
+    throw new AppError('内置 Kconfig 解析结果为空（树可能不完整）', 500, 'KCONFIG_EMPTY');
+  }
+  const allWarnings = [...extraWarnings, ...warnings.slice(0, 30)];
+
+  // 写回树内 .config（temp + rename 原子写）。
+  const configPath = path.join(root, '.config');
+  const temporary = `${configPath}.tmp-${process.pid}`;
+  await writeFile(temporary, formatConfigFile(mainmenu, values));
+  await rename(temporary, configPath);
+
+  // autoconf.h：编译视角取值头（clangd 注入用）。偏差：make syncconfig 还会生成
+  // include/config/auto.conf 与 rustc_cfg，JS 引擎只写 clangd 需要的这一份。
+  let autoconf = false;
+  try {
+    const header = path.join(root, 'include', 'generated', 'autoconf.h');
+    await mkdir(path.dirname(header), { recursive: true });
+    const entries = autoconfEntries(model, values);
+    const headerTemporary = `${header}.tmp-${process.pid}`;
+    await writeFile(headerTemporary, formatAutoconfHeader(mainmenu, entries));
+    await rename(headerTemporary, header);
+    autoconf = true;
+  } catch (error) {
+    allWarnings.push(`autoconf.h 写出失败：${error.message}`);
+  }
+  return { values, autoconf, warnings: allWarnings };
+}
+
 async function resolveOnce(repository, { arch, defconfig }) {
   if (!NAME_RE.test(arch)) throw new AppError('架构名无效', 400, 'INVALID_KCONFIG_NAME');
   if (!NAME_RE.test(defconfig)) throw new AppError('defconfig 名无效', 400, 'INVALID_KCONFIG_NAME');
@@ -255,30 +310,54 @@ async function resolveOnce(repository, { arch, defconfig }) {
     await pruneBackups(dir).catch(() => {});
   }
 
-  await runMake(root, [`ARCH=${arch}`, defconfig], MAKE_TIMEOUT_MS);
-
-  // syncconfig 生成 include/generated/autoconf.h（编译视角的取值头，clangd 注入用）；
-  // 失败不影响取值解析，降级为警告。
+  const engine = kconfigEngine();
+  let values = null;
   let autoconf = false;
   const warnings = [];
-  try {
-    await runMake(root, [`ARCH=${arch}`, 'syncconfig'], SYNCCONFIG_TIMEOUT_MS);
-    autoconf = await exists(path.join(root, 'include', 'generated', 'autoconf.h'));
-  } catch (error) {
-    warnings.push(`syncconfig 未完成：${error.message}`);
+  if (engine === 'js') {
+    const result = await resolveWithJs(repository, { arch, defconfig });
+    values = result.values;
+    autoconf = result.autoconf;
+    warnings.push(...result.warnings);
+  } else {
+    try {
+      await runMake(root, [`ARCH=${arch}`, defconfig], MAKE_TIMEOUT_MS);
+    } catch (error) {
+      // 工具链缺失（flex/bison/make 不可用）时回退内置 JS 解析器；其它错误
+      // （超时、Kconfig 语法错误等）如实抛出。
+      if (isToolchainMissing(error)) {
+        const notice = '已使用内置 Kconfig 解析器（宿主机缺少 make/flex/bison）';
+        console.warn(`[kconfig] ${error.message}；${notice}`);
+        const result = await resolveWithJs(repository, { arch, defconfig }, [notice]);
+        values = result.values;
+        autoconf = result.autoconf;
+        warnings.push(...result.warnings);
+      } else {
+        throw error;
+      }
+    }
+    if (values === null) {
+      // make defconfig 成功：syncconfig 生成 include/generated/autoconf.h（编译
+      // 视角的取值头，clangd 注入用）；失败不影响取值解析，降级为警告。
+      try {
+        await runMake(root, [`ARCH=${arch}`, 'syncconfig'], SYNCCONFIG_TIMEOUT_MS);
+        autoconf = await exists(path.join(root, 'include', 'generated', 'autoconf.h'));
+      } catch (error) {
+        warnings.push(`syncconfig 未完成：${error.message}`);
+      }
+      if (!autoconf && !warnings.length) {
+        warnings.push('未生成 include/generated/autoconf.h（clangd 仍按无配置解析）');
+      }
+      let content;
+      try {
+        content = await readFile(configPath, 'utf8');
+      } catch (error) {
+        throw new AppError(`解析后读取 .config 失败：${error.message}`, 500, 'KCONFIG_CONFIG_MISSING');
+      }
+      values = parseConfigContent(content);
+      if (!Object.keys(values).length) throw new AppError('.config 解析结果为空', 500, 'KCONFIG_EMPTY');
+    }
   }
-  if (!autoconf && !warnings.length) {
-    warnings.push('未生成 include/generated/autoconf.h（clangd 仍按无配置解析）');
-  }
-
-  let content;
-  try {
-    content = await readFile(configPath, 'utf8');
-  } catch (error) {
-    throw new AppError(`解析后读取 .config 失败：${error.message}`, 500, 'KCONFIG_CONFIG_MISSING');
-  }
-  const values = parseConfigContent(content);
-  if (!Object.keys(values).length) throw new AppError('.config 解析结果为空', 500, 'KCONFIG_EMPTY');
   const head = (await runGit(['rev-parse', '--short', 'HEAD'], { cwd: root, timeout: 15_000 })).trim();
   const store = {
     version: STORE_VERSION,

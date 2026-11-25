@@ -28,6 +28,22 @@ export const kconfigRoutes = [
     },
   },
   {
+    // 置灰用的取值接口：与列表接口分开，避免上万条 values 拖慢设置菜单；
+    // stale / 未解析时不带 values，前端据此不启用置灰。
+    method: 'GET',
+    pattern: /^\/api\/repositories\/([^/]+)\/kconfig\/values$/,
+    async handler({ response, params }) {
+      const repository = getRepository(params[0]);
+      const current = await kconfigStatus(repository);
+      if (!current) {
+        sendJson(response, 200, { available: false, stale: true });
+        return;
+      }
+      const { arch, defconfig, stale, values } = current;
+      sendJson(response, 200, { available: true, arch, defconfig, stale, values });
+    },
+  },
+  {
     method: 'POST',
     pattern: /^\/api\/repositories\/([^/]+)\/kconfig\/resolve$/,
     async handler({ request, response, params }) {

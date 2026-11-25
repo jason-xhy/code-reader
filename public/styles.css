@@ -950,6 +950,9 @@ input[readonly] { color: #8391a4; background: #111821; }
 #editor .cm-editor.cm-focused { outline: none; }
 #editor .cm-scroller { overflow: auto; }
 
+/* 未生效 #if 分支（kconfig 取值判定）：半透明而非隐藏，行内容仍可见。 */
+#editor .cm-config-inactive { opacity: .45; }
+
 /* ---- 第三轮新增：历史菜单/主题/知识库/目录浏览/FAQ/提交详情/Explorer ---- */
 .open-group { position: relative; display: flex; gap: 6px; }
 .history-button { padding: 7px 9px; font-size: 11px; }

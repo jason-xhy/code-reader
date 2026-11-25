@@ -10,7 +10,7 @@ import { AppError } from './errors.js';
 import { listSourceFiles, readSource } from './git.js';
 import { clearCompilationDatabase, prepareCompilationDatabase } from './compile-db.js';
 import { kconfigCurrent, kconfigValue } from './kconfig.js';
-import { searchSymbolDefinitions, wordAt } from './symbol-search.js';
+import { searchSymbolDefinitions, searchSymbolReferences, wordAt } from './symbol-search.js';
 
 const execFileAsync = promisify(execFile);
 const REQUEST_TIMEOUT = 60_000;
@@ -548,5 +548,52 @@ export async function lspGotoDefinition(repository, body) {
 }
 
 export async function lspReferences(repository, body) {
-  return { locations: await sessionFor(repository).references(body.path, body.line, body.character, body.content) };
+  // LSP 结果为基线：异常（引擎缺失/超时/冷索引无响应）时置空不抛，交给文本检索兜底。
+  let lspLocations = [];
+  let lspError = null;
+  try {
+    lspLocations = await sessionFor(repository).references(body.path, body.line, body.character, body.content);
+  } catch (error) {
+    lspError = error;
+  }
+  // 文本检索补充：冷索引时 LSP 只有同文件命中，git grep 全词检索能补上跨文件
+  // 调用点与 CONFIG_* 的 autoconf.h 定义；自身失败不影响 LSP 结果。
+  let textLocations = [];
+  try {
+    textLocations = await searchSymbolReferences({
+      root: repository.root,
+      filePath: body.path,
+      line: body.line,
+      character: body.character,
+      content: body.content,
+    });
+  } catch {
+    textLocations = [];
+  }
+  // 合并去重：LSP 优先（位置更准），文本结果按 path:line 补差集。
+  const seen = new Set();
+  const locations = [];
+  for (const location of lspLocations) {
+    const key = `${location.path}:${location.line}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    locations.push(location);
+  }
+  const before = locations.length;
+  for (const location of textLocations) {
+    const key = `${location.path}:${location.line}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    locations.push(location);
+  }
+  const textExtra = locations.length - before;
+  if (lspError) {
+    if (locations.length) {
+      // LSP 失败但文本检索有结果：正常返回，不把错误抛给前端。
+      console.error('[lsp] 引用请求失败，已回退到文本检索：', lspError?.message || lspError);
+      return { locations, textExtra };
+    }
+    throw lspError;
+  }
+  return { locations, textExtra };
 }
