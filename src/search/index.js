@@ -12,28 +12,34 @@ import { dataPath } from '../paths.js';
 import { listSourceFiles, runGit } from '../git.js';
 import { searchConfig } from './config.js';
 import { canSearchFunctions, globRank, regexRank } from './query.js';
-import { definitionInfo } from './definitions.js';
+import { definitionInfo, kconfigSymbolInfo } from './definitions.js';
 import { compareResults, fileMatchRank, matchLabel, matchRank } from './ranking.js';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 
-const INDEX_VERSION = 2;
+// 版本 3：符号索引纳入 Kconfig 符号（config FOO / menuconfig FOO 行）。
+const INDEX_VERSION = 3;
 const INDEX_TTL_MS = 10 * 60_000;
 const BUILD_TIMEOUT_MS = 180_000;
 const MAX_SYMBOL_HITS = 20_000;
 const MAX_FILE_HITS = 20_000;
 
+// Kconfig 文件（Kconfig、Kconfig.debug 等）basename 前缀。
+const isKconfigPath = (filePath) => /^Kconfig/.test(path.posix.basename(filePath));
+
 // POSIX ERE：ripgrep 与 git grep -E 都能执行。C 系负责顶格的类型+函数名，
-// 其余语言按各自定义关键字；冒号行由 definitionInfo 二次判定，误报会被丢掉。
+// 其余语言按各自定义关键字，Kconfig 负责 config/menuconfig 符号行；
+// 冒号行由 definitionInfo / kconfigSymbolInfo 二次判定，误报会被丢掉。
 const CANDIDATE_PATTERN = [
   '^[A-Za-z_][A-Za-z0-9_ *]*[ *][A-Za-z_][A-Za-z0-9_]*[[:blank:]]*\\([^;]*$',
   '^[[:blank:]]*(async[[:blank:]]+)?def[[:blank:]]+[A-Za-z_]',
   '^[[:blank:]]*(export[[:blank:]]+)?(async[[:blank:]]+)?function[[:blank:]]*\\*?[[:blank:]]*[A-Za-z_$]',
-  '^[[:blank:]]*(const|let|var)[[:blank:]]+[A-Za-z_$][A-Za-z0-9_$]*[[:blank:]]*=[[:blank:]]*(async[[:blank:]]*)?(\\([^;]*=>|[A-Za-z_$][A-Za-z0-9_$]*[[:blank:]]*=>)',
+  '^[[:blank:]]*(const|let|var)[[:blank:]]+[A-Za-z_$][A-Za-z0-9_$]*[[:blank:]]*=[[:blank:]]*(async[[:blank:]]*)?(\\([^;]*=>|[A-Za-z_$][A-Za-z0-9_$]*[[:blank:]]+=>)',
   '^[[:blank:]]*func[[:blank:]]+(\\([^)]*\\)[[:blank:]]*)?[A-Za-z_]',
   '^[[:blank:]]*(pub([^)]*)?[[:blank:]]+)?(async[[:blank:]]+)?(unsafe[[:blank:]]+)?(const[[:blank:]]+)?fn[[:blank:]]+[A-Za-z_]',
   '^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*[[:blank:]]*\\([[:blank:]]*\\)[[:blank:]]*\\{?',
+  '^[[:blank:]]*(menu)?config[[:blank:]]+[A-Za-z0-9_]+',
 ].join('|');
 
 const states = new Map();
@@ -82,7 +88,9 @@ function createIndexBuilder(root) {
   let skipped = 0;
 
   const addSymbol = (filePath, lineNumber, text) => {
-    const info = definitionInfo(text);
+    // 文件名网关：Kconfig 命名的文件解析 config 符号行，其余走函数定义启发式
+    // （config 形态的 C 行会被 definitionInfo 丢掉，反之亦然）。
+    const info = isKconfigPath(filePath) ? kconfigSymbolInfo(text) : definitionInfo(text);
     if (!info?.name || info.name.length > 120) {
       skipped += 1;
       return;
@@ -393,6 +401,8 @@ export function queryIndex(index, parsed, limits = {}) {
     ? parsed.text.length >= searchConfig.minFunctionQueryLength
     : canSearchFunctions(parsed.text)) {
     const total = index.symbolFile.length;
+    // Kconfig 符号与函数共用一套排序，仅 kind 不同；按路径一次性派生避免逐行正则。
+    const pathKinds = index.symbolPaths.map((filePath) => (isKconfigPath(filePath) ? 'kconfig' : 'function'));
     for (let cursor = 0; cursor < total; cursor += 1) {
       const nameId = index.symbolName[cursor];
       const name = index.names[nameId];
@@ -401,9 +411,10 @@ export function queryIndex(index, parsed, limits = {}) {
       if (rank === null) continue;
       functionCount += 1;
       if (functions.length >= maxSymbols) continue;
-      const filePath = index.symbolPaths[index.symbolFile[cursor]];
+      const fileCursor = index.symbolFile[cursor];
+      const filePath = index.symbolPaths[fileCursor];
       functions.push({
-        kind: 'function',
+        kind: pathKinds[fileCursor] || 'function',
         name,
         path: filePath,
         line: index.symbolLine[cursor],

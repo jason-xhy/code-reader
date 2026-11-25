@@ -14,8 +14,9 @@ import { searchSymbolDefinitions, wordAt } from '../src/symbol-search.js';
 import { buildUnderstandingContext } from '../src/understanding.js';
 import { parseAnimation, wantsAnimation } from '../src/animation.js';
 import { createAnimationHtml } from '../public/animation-html.js';
-import { definitionInfo, definitionName } from '../src/search/definitions.js';
+import { definitionInfo, definitionName, kconfigSymbolInfo } from '../src/search/definitions.js';
 import { matchRank } from '../src/search/ranking.js';
+import { parseConfigContent } from '../src/kconfig.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const testPort = Number(process.env.CODE_READER_TEST_PORT || 8799);
@@ -417,6 +418,18 @@ try {
 
   writeFileSync(path.join(work, 'sample.h'), 'struct demo_event {\n\tint value;\n};\n');
   writeFileSync(path.join(work, 'demo_handle_notes.md'), 'demo_handle notes\n');
+  // Kconfig 符号：config / menuconfig / depends on 三种形态，行号被下方断言引用。
+  writeFileSync(path.join(work, 'Kconfig'), [
+    'config SAMPLE_CFG',
+    '\tbool "Sample config"',
+    '',
+    'menuconfig SAMPLE_MENU',
+    '\tbool "Sample menu"',
+    '',
+    'config SAMPLE_KCF',
+    '\tbool',
+    '\tdepends on SAMPLE_KCF',
+  ].join('\n') + '\n');
   writeFileSync(path.join(work, 'sample.c'), [
     '#include "sample.h"',
     '',
@@ -430,10 +443,26 @@ try {
     '\tstruct demo_event event;',
     '\tdemo_handle(&event);',
     '}',
+    '',
+    '#define CONFIG_SAMPLE_CFG 1',
+    '#define CONFIG_SAMPLE_ONLY 1',
+    '#ifdef CONFIG_SAMPLE_CFG',
+    'static int sample_configured(void)',
+    '{',
+    '\treturn CONFIG_SAMPLE_CFG;',
+    '}',
+    '#endif',
+    '#ifdef CONFIG_SAMPLE_ONLY',
+    'static int sample_only(void)',
+    '{',
+    '\treturn CONFIG_SAMPLE_ONLY;',
+    '}',
+    '#endif',
   ].join('\n') + '\n');
-  git(work, 'add', 'sample.c', 'sample.h', 'demo_handle_notes.md');
+  git(work, 'add', 'sample.c', 'sample.h', 'demo_handle_notes.md', 'Kconfig');
   git(work, 'commit', '-m', 'sample-symbols');
   const sampleContent = readFileSync(path.join(work, 'sample.c'), 'utf8');
+  const kconfigContent = readFileSync(path.join(work, 'Kconfig'), 'utf8');
 
   // 工作区搜索：完全匹配的函数排第一；文件名部分匹配排在其后。
   const searchExact = await api('GET', `${repoBase}/search?q=demo_handle`);
@@ -512,6 +541,26 @@ try {
   );
   const globMiss = await api('GET', `${repoBase}/search?q=${encodeURIComponent('sample.c.bak')}`);
   assert(globMiss.data.results?.length === 0, '工作区搜索：无通配符时仍按字面量匹配', JSON.stringify(globMiss.data.results));
+  // Kconfig 符号进入工作区搜索索引（config / menuconfig 行，kind=kconfig）。
+  const searchKconfig = await api('GET', `${repoBase}/search?q=SAMPLE_CFG`);
+  assert(
+    searchKconfig.data.results?.some((item) => item.kind === 'kconfig'
+      && item.name === 'SAMPLE_CFG'
+      && item.path === 'Kconfig'
+      && item.line === 1
+      && item.character === 7),
+    '工作区搜索：Kconfig 符号（config 行）可搜',
+    JSON.stringify(searchKconfig.data.results),
+  );
+  const searchKconfigMenu = await api('GET', `${repoBase}/search?q=SAMPLE_ME`);
+  assert(
+    searchKconfigMenu.data.results?.some((item) => item.kind === 'kconfig'
+      && item.name === 'SAMPLE_MENU'
+      && item.path === 'Kconfig'
+      && item.line === 4),
+    '工作区搜索：Kconfig 符号（menuconfig 行）可搜',
+    JSON.stringify(searchKconfigMenu.data.results),
+  );
   const typedInfo = definitionInfo('struct foo_t *foo(void)');
   assert(
     definitionName('static int foo(struct x *p)') === 'foo'
@@ -543,6 +592,96 @@ try {
   assert(typeDefinitions.length === 1 && typeDefinitions[0].path === 'sample.h' && typeDefinitions[0].line === 1, '文本检索兜底：结构体定义定位到头文件', JSON.stringify(typeDefinitions));
   const functionDefinitions = await searchSymbolDefinitions({ root: work, filePath: 'sample.c', line: 11, character: 3, content: sampleContent });
   assert(functionDefinitions.length === 1 && functionDefinitions[0].path === 'sample.c' && functionDefinitions[0].line === 3, '文本检索兜底：函数调用定位到定义行', JSON.stringify(functionDefinitions));
+  // Kconfig 定义识别：CONFIG_SAMPLE_CFG 同时有 #define 与 config 定义，config 行优先。
+  const configDefinitions = await searchSymbolDefinitions({ root: work, filePath: 'sample.c', line: 14, character: 8, content: sampleContent });
+  assert(
+    configDefinitions.length === 1
+    && configDefinitions[0].path === 'Kconfig'
+    && configDefinitions[0].line === 1
+    && configDefinitions[0].character === 7,
+    'Kconfig 定义识别：CONFIG_ 符号优先定位 config 行而非 #define',
+    JSON.stringify(configDefinitions),
+  );
+  // 非 Kconfig 符号（只有 #define）：维持旧的宏定义定位行为。
+  const macroOnlyDefinitions = await searchSymbolDefinitions({ root: work, filePath: 'sample.c', line: 22, character: 8, content: sampleContent });
+  assert(
+    macroOnlyDefinitions.length === 1
+    && macroOnlyDefinitions[0].path === 'sample.c'
+    && macroOnlyDefinitions[0].line === 15
+    && macroOnlyDefinitions[0].character === 8,
+    'Kconfig 定义识别：无 config 条目的 CONFIG_ 符号回退 #define',
+    JSON.stringify(macroOnlyDefinitions),
+  );
+  // Kconfig 文件内的裸符号（depends on FOO → config FOO）。
+  const bareKconfigDefinitions = await searchSymbolDefinitions({ root: work, filePath: 'Kconfig', line: 9, character: 15, content: kconfigContent });
+  assert(
+    bareKconfigDefinitions.length === 1
+    && bareKconfigDefinitions[0].path === 'Kconfig'
+    && bareKconfigDefinitions[0].line === 7,
+    'Kconfig 定义识别：裸全大写符号回退 config 行',
+    JSON.stringify(bareKconfigDefinitions),
+  );
+  const kconfigInfo = kconfigSymbolInfo('\tconfig SAMPLE_CFG # 注释');
+  assert(
+    kconfigSymbolInfo('config SAMPLE_CFG')?.name === 'SAMPLE_CFG'
+    && kconfigSymbolInfo('menuconfig SAMPLE_MENU')?.index === 11
+    && kconfigInfo?.name === 'SAMPLE_CFG'
+    && kconfigSymbolInfo('configfoo') === null
+    && kconfigSymbolInfo('\tdepends on FOO') === null,
+    'Kconfig 行解析：config/menuconfig/注释与误报排除',
+    JSON.stringify(kconfigInfo),
+  );
+  const parsedValues = parseConfigContent([
+    '# CONFIG_A is not set',
+    'CONFIG_B=y',
+    'CONFIG_C=m',
+    'CONFIG_D="text value"',
+    'CONFIG_E=4096',
+    '# 注释与空行忽略',
+    '',
+  ].join('\n'));
+  // 键名不带 CONFIG_ 前缀（与 Kconfig 符号名一致，kconfigValue 按裸名查询）。
+  assert(
+    parsedValues.A === 'n'
+    && parsedValues.B === 'y'
+    && parsedValues.C === 'm'
+    && parsedValues.D === '"text value"'
+    && parsedValues.E === '4096'
+    && Object.keys(parsedValues).length === 5,
+    'Kconfig 取值解析：y/m/n/字符串/数字',
+    JSON.stringify(parsedValues),
+  );
+  // 跳转定义 API：CONFIG_ 符号返回 Kconfig 定位，并附带未解析标记（fixture 未跑 make）。
+  const gotoConfig = await api('POST', `${repoBase}/lsp/goto-definition`, { path: 'sample.c', line: 16, character: 8, content: sampleContent });
+  assert(
+    gotoConfig.status === 200
+    && gotoConfig.data.locations?.length === 1
+    && gotoConfig.data.locations[0].path === 'Kconfig'
+    && gotoConfig.data.locations[0].line === 1
+    && gotoConfig.data.config?.symbol === 'SAMPLE_CFG'
+    && gotoConfig.data.config?.resolved === false,
+    '跳转定义 API：CONFIG_ 符号定位 Kconfig 并附带取值信息',
+    JSON.stringify(gotoConfig.data),
+  );
+  // Kconfig 路由：非内核仓的架构列表为空；解析请求给出可读错误。
+  const kconfigOptions = await api('GET', `${repoBase}/kconfig`);
+  assert(
+    kconfigOptions.status === 200
+    && Array.isArray(kconfigOptions.data.arches)
+    && kconfigOptions.data.arches.length === 0
+    && kconfigOptions.data.current === null,
+    'Kconfig 路由：非内核仓库返回空架构与未解析状态',
+    JSON.stringify(kconfigOptions.data),
+  );
+  const kconfigResolveMissing = await api('POST', `${repoBase}/kconfig/resolve`, {});
+  assert(kconfigResolveMissing.status === 400, 'Kconfig 路由：缺少参数返回 400', `status=${kconfigResolveMissing.status}`);
+  const kconfigResolveBad = await api('POST', `${repoBase}/kconfig/resolve`, { arch: 'x86', defconfig: 'defconfig' });
+  assert(
+    kconfigResolveBad.status === 400
+    && kconfigResolveBad.data?.error?.code === 'INVALID_KCONFIG_ARCH',
+    'Kconfig 路由：未知架构返回 INVALID_KCONFIG_ARCH',
+    JSON.stringify(kconfigResolveBad.data),
+  );
 
   const bodySegment = detectFunctionSegment(sampleContent, 5);
   assert(bodySegment?.lineStart === 3 && bodySegment?.lineEnd === 6 && bodySegment?.symbol === 'demo_handle', '函数范围识别（函数体内）', JSON.stringify(bodySegment));

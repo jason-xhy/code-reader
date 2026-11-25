@@ -80,3 +80,15 @@ export function definitionInfo(line) {
 export function definitionName(line) {
   return definitionInfo(line)?.name || null;
 }
+
+// Kconfig 符号定义行：config FOO / menuconfig FOO（缩进任意，行尾允许注释）。
+const KCONFIG_SYMBOL_RE = /^[ \t]*(?:menu)?config[ \t]+([A-Za-z0-9_]+)[ \t]*(?:#.*)?$/;
+
+// 与 definitionInfo 对应的 Kconfig 版本：返回符号名与名称在行内的起始列。
+// 只对 Kconfig 命名的文件调用（由调用方按 basename 网关）。
+export function kconfigSymbolInfo(line) {
+  const text = String(line ?? '');
+  const match = text.match(KCONFIG_SYMBOL_RE);
+  if (!match) return null;
+  return { name: match[1], index: text.indexOf(match[1]) };
+}

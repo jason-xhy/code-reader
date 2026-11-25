@@ -14,6 +14,8 @@ export const searchConfig = {
   cacheTtlMs: 30_000,
   cacheLimit: 24,
   // 源码文件扩展名（git grep 的 pathspec）。按语言增删即可扩展搜索范围。
+  // *Kconfig* 纳入内核 Kconfig 符号（config FOO / menuconfig FOO）：
+  // rg glob 与 git pathspec 下该写法都能命中任意深度的 lib/Kconfig.debug。
   sourceGlobs: [
     '*.c', '*.h', '*.hh', '*.cc', '*.cpp', '*.cxx', '*.hpp', '*.hxx', '*.inl',
     '*.S', '*.s', '*.asm',
@@ -21,5 +23,6 @@ export const searchConfig = {
     '*.py', '*.pyi', '*.go', '*.rs', '*.java', '*.kt', '*.kts',
     '*.sh', '*.bash', '*.zsh', '*.lua', '*.rb', '*.php', '*.pl',
     '*.cs', '*.swift', '*.scala', '*.m', '*.mm',
+    '*Kconfig*',
   ],
 };

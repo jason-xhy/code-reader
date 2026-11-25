@@ -22,7 +22,7 @@ export async function clearCompilationDatabase(id) {
   await rm(path.join(lspDataRoot, id), { recursive: true, force: true });
 }
 
-export async function prepareCompilationDatabase(root, files, id) {
+export async function prepareCompilationDatabase(root, files, id, options = {}) {
   if (await exists(path.join(root, 'compile_commands.json')) || await exists(path.join(root, '.ccls'))) {
     return { directory: root, generated: false };
   }
@@ -33,7 +33,8 @@ export async function prepareCompilationDatabase(root, files, id) {
   }
   await mkdir(directory, { recursive: true });
 
-  const arch = (process.env.KERNEL_ARCH || 'x86').replace(/[^a-z0-9_-]/gi, '');
+  // 架构优先级：kconfig 解析结果（用户设置）> 环境变量 > x86 默认。
+  const arch = String(options.arch || process.env.KERNEL_ARCH || 'x86').replace(/[^a-z0-9_-]/gi, '');
   const includeDirs = [
     path.join(root, 'arch', arch, 'include'),
     path.join(root, 'arch', arch, 'include', 'generated'),
@@ -45,6 +46,13 @@ export async function prepareCompilationDatabase(root, files, id) {
     path.join(root, 'include', 'generated', 'uapi'),
   ];
   const includeFlags = includeDirs.map((dir) => `-I${dir}`);
+  // 解析过配置的树注入 kconfig.h（内核真实编译的入口头，会包含 generated/autoconf.h
+  // 并提供 CONFIG_FOO_MODULE / __enabled 等宏）：clangd 由此获得全部 CONFIG 取值。
+  const forceIncludes = [];
+  const kconfigHeader = path.join(root, 'include', 'linux', 'kconfig.h');
+  if ((await exists(path.join(root, 'include', 'generated', 'autoconf.h'))) && (await exists(kconfigHeader))) {
+    forceIncludes.push('-include', kconfigHeader);
+  }
 
   const entries = [];
   for (const file of files) {
@@ -55,7 +63,7 @@ export async function prepareCompilationDatabase(root, files, id) {
     entries.push({
       directory: root,
       file: absolute,
-      arguments: ['cc', std, '-D__KERNEL__', ...includeFlags, '-c', absolute],
+      arguments: ['cc', std, '-D__KERNEL__', ...forceIncludes, ...includeFlags, '-c', absolute],
     });
   }
 

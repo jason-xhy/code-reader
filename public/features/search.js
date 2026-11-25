@@ -23,7 +23,7 @@ function searchTitle(data) {
   const counts = data?.counts || {};
   const truncated = data?.truncated ? ' · 结果已截断' : '';
   const indexing = data?.index?.status === 'building' ? ' · 索引构建中' : '';
-  return `${counts.functions || 0} 个函数 · ${counts.files || 0} 个文件${truncated}${indexing} · ↑/↓ 或 Ctrl+j/k 选择 · Enter 跳转 · Esc 取消`;
+  return `${counts.functions || 0} 个符号（函数/配置） · ${counts.files || 0} 个文件${truncated}${indexing} · ↑/↓ 或 Ctrl+j/k 选择 · Enter 跳转 · Esc 取消`;
 }
 
 export function openWorkspaceSearch() {
@@ -45,8 +45,8 @@ export function openWorkspaceSearch() {
     if (!query) {
       editor.updateQuickpickItems([], {
         sessionId,
-        title: '在工作区搜索函数或文件名 · 支持 * ? 通配符与 /正则/ · 完全匹配优先',
-        emptyText: '输入关键字开始搜索（函数名或文件名，支持 xhci*.c 这类通配符，或输入 /正则/）',
+        title: '在工作区搜索函数/配置/文件名 · 支持 * ? 通配符与 /正则/ · 完全匹配优先',
+        emptyText: '输入关键字开始搜索（函数名、Kconfig 配置名或文件名，支持 xhci*.c 这类通配符，或输入 /正则/）',
       });
       return;
     }
@@ -66,12 +66,12 @@ export function openWorkspaceSearch() {
         character: result.character || 0,
         label: result.name,
         kind: result.kind,
-        detail: `${result.kind === 'function' ? '函数' : '文件'} · ${MATCH_LABELS[result.match] || '包含'}`,
+        detail: `${result.kind === 'function' ? '函数' : result.kind === 'kconfig' ? '配置' : '文件'} · ${MATCH_LABELS[result.match] || '包含'}`,
       }));
       editor.updateQuickpickItems(items, {
         sessionId,
         title: searchTitle(data),
-        emptyText: data.warning || '没有匹配的函数或文件名',
+        emptyText: data.warning || '没有匹配的函数、配置或文件名',
       });
     } catch (error) {
       if (seq !== requestSeq) return;

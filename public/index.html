@@ -72,6 +72,10 @@
                 <strong>编辑器环境</strong>
                 <span>关联本地 vim/neovim 环境</span>
               </button>
+              <button type="button" class="settings-item" data-setting="kernel">
+                <strong>内核配置</strong>
+                <span id="settings-kernel-status">未解析</span>
+              </button>
               <button type="button" class="settings-item" data-setting="keymap">
                 <strong>快捷键</strong>
                 <span>查看 / 改绑全局快捷键</span>
@@ -298,6 +302,32 @@
       <div class="dialog-actions">
         <span id="llm-save-progress"></span>
         <button id="llm-save" class="button primary" type="submit">保存设置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="kernel-dialog" class="open-dialog kernel-dialog">
+    <div class="dialog-heading">
+      <div>
+        <h2>内核配置</h2>
+        <p>选择架构与 defconfig，用内核自身的 Kconfig 规则解析全部配置取值；跳转定义将定位 Kconfig 源定义并显示当前值。</p>
+      </div>
+      <button id="kernel-dialog-close" class="icon-button" type="button" aria-label="关闭">×</button>
+    </div>
+    <form id="kernel-form" class="llm-form">
+      <div class="llm-field">
+        <label for="kernel-arch">架构</label>
+        <select id="kernel-arch" required></select>
+      </div>
+      <div class="llm-field">
+        <label for="kernel-defconfig">defconfig</label>
+        <select id="kernel-defconfig" required></select>
+      </div>
+      <p class="field-help">将在源码树内运行 make（首次会构建 Kconfig 工具，需要 flex/bison）；生成的 .config、include/generated/ 等均在 .gitignore 内，已有 .config 会先备份到应用数据目录。解析完成后语言服务器会按所选架构自动重建。</p>
+      <div id="kernel-error" class="dialog-error" role="alert"></div>
+      <div class="dialog-actions">
+        <span id="kernel-progress"></span>
+        <button id="kernel-resolve" class="button primary" type="submit">解析配置</button>
       </div>
     </form>
   </dialog>

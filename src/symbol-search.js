@@ -8,6 +8,13 @@ const MAX_RESULTS = 12;
 const MIN_DEFINITION_SCORE = 60;
 const SOURCE_PATHS = ['*.c', '*.h', '*.cc', '*.cpp', '*.hpp', '*.S', '*.s'];
 const IDENTIFIER_RE = /[A-Za-z_][A-Za-z0-9_]*/g;
+// Kconfig 文件的 git pathspec：`Kconfig*` 只匹配根级，`*Kconfig*` 才能命中
+// 任意深度的 lib/Kconfig.debug、arch/arm64/Kconfig 等。
+const KCONFIG_PATHS = ['*Kconfig*'];
+// Kconfig 定义行分数：必须高于同文件 #define 的 100+30（同文件加成），
+// CONFIG_FOO 的权威定义是 Kconfig 的 config FOO 行。
+const KCONFIG_DEFINITION_SCORE = 140;
+const CONFIG_SYMBOL_RE = /^CONFIG_([A-Z][A-Z0-9_]*)$/;
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -76,6 +83,58 @@ async function gitGrepDefinitions(root, identifier) {
   }
 }
 
+// CONFIG_FOO 的 Kconfig 定义行是 `config FOO`（不带前缀）；
+// CONFIG_FOO_MODULE 对应 `config FOO`（=m 时宏名带 _MODULE 后缀）。
+function kconfigCandidateNames(identifier) {
+  const match = CONFIG_SYMBOL_RE.exec(identifier);
+  if (!match) return null;
+  const name = match[1];
+  return name.endsWith('_MODULE') ? [name, name.slice(0, -'_MODULE'.length)] : [name];
+}
+
+async function gitGrepKconfigDefinitions(root, name) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return [];
+  try {
+    // git grep -E 是 POSIX ERE：不吃 \s 与 (?:)；字尾用 ([[:space:]]|$) 锚定，
+    // 防止 config FOO 误配 config FOO_BAR。
+    const stdout = await runGit(
+      ['grep', '-n', '-I', '-E', '--no-color', '-e', `^[[:space:]]*(menu)?config[[:space:]]+${escapeRegExp(name)}([[:space:]]|$)`, '--', ...KCONFIG_PATHS],
+      { cwd: root, timeout: 20_000 },
+    );
+    return stdout.split('\n');
+  } catch {
+    return [];
+  }
+}
+
+// 把 Kconfig 定义合并进已有结果集：CONFIG_FOO 必查（分数高于 #define）；
+// 裸全大写标识符（如在 Kconfig 文件里 gd `depends on FOO` 的 FOO）在 C 源
+// 无命中时回退查 `config FOO`。沿用同一去重键与行解析格式。
+async function mergeKconfigDefinitions({ root, identifier, results, seen }) {
+  let names = kconfigCandidateNames(identifier);
+  if (!names && /^[A-Z][A-Z0-9_]*$/.test(identifier) && identifier.length >= 3) {
+    names = results.length ? [] : [identifier];
+  }
+  if (!names?.length) return;
+  for (const name of names) {
+    const lines = await gitGrepKconfigDefinitions(root, name);
+    for (const entry of lines) {
+      const match = /^(.*?):(\d+):(.*)$/.exec(entry);
+      if (!match) continue;
+      const [, candidatePath, candidateLine, lineSource] = match;
+      const key = `${candidatePath}:${candidateLine}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push({
+        path: path.normalize(candidatePath),
+        line: Number(candidateLine),
+        character: identifierStart(lineSource, name),
+        score: KCONFIG_DEFINITION_SCORE,
+      });
+    }
+  }
+}
+
 export async function searchDefinitionsForIdentifier({ root, identifier, filePath }) {
   if (!identifier || identifier.length < 2) return [];
   const lines = await gitGrepDefinitions(root, identifier);
@@ -97,6 +156,7 @@ export async function searchDefinitionsForIdentifier({ root, identifier, filePat
       score,
     });
   }
+  await mergeKconfigDefinitions({ root, identifier, results, seen });
   results.sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.line - b.line);
   const best = results[0]?.score;
   return results

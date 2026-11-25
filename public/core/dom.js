@@ -132,4 +132,13 @@ export const elements = {
   settingsMenuButton: $('#settings-menu-button'),
   settingsMenu: $('#settings-menu'),
   settingsLlmStatus: $('#settings-llm-status'),
+  settingsKernelStatus: $('#settings-kernel-status'),
+  kernelDialog: $('#kernel-dialog'),
+  kernelClose: $('#kernel-dialog-close'),
+  kernelForm: $('#kernel-form'),
+  kernelArch: $('#kernel-arch'),
+  kernelDefconfig: $('#kernel-defconfig'),
+  kernelError: $('#kernel-error'),
+  kernelProgress: $('#kernel-progress'),
+  kernelResolve: $('#kernel-resolve'),
 };

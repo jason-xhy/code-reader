@@ -11,6 +11,7 @@ import { openEditorEnvDialog } from './editor-mode.js';
 
 // llmSettings 实例在 app.js 里动态 import 后才创建，这里用注册式解耦。
 let openLlmSettings = null;
+let openKernelConfig = null;
 
 export function initSettingsMenu() {
   elements.settingsMenuButton.addEventListener('click', (event) => {
@@ -82,6 +83,9 @@ function openSetting(setting) {
     case 'editor-env':
       openEditorEnvDialog();
       break;
+    case 'kernel':
+      openKernelConfig?.();
+      break;
     case 'keymap':
       openKeymapDialog();
       break;
@@ -96,6 +100,11 @@ function openSetting(setting) {
 // app.js 在 llmSettings 创建完成后注册入口；菜单内状态行同步当前配置。
 export function registerLlmSettingsOpener(open) {
   openLlmSettings = open;
+}
+
+// 内核配置对话框入口同样由 app.js 注册。
+export function registerKernelConfigOpener(open) {
+  openKernelConfig = open;
 }
 
 export function updateSettingsLlmStatus(text) {

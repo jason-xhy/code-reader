@@ -754,6 +754,7 @@ kbd { border: 1px solid #435064; border-bottom-width: 2px; border-radius: 4px; b
 .quickpick-label { overflow: hidden; text-overflow: ellipsis; color: #8fc0ff; font-weight: 600; }
 .quickpick-kind { flex: none; border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; color: var(--muted); font-size: 10px; }
 .quickpick-kind-function { border-color: #2f5b3c; color: #9fe0b0; }
+.quickpick-kind-kconfig { border-color: #5b4a2f; color: #e0c49f; }
 .quickpick-location { flex: none; margin-left: auto; color: #6f8195; font-size: 10px; }
 .question-editor {
   position: absolute;

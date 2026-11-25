@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { listSourceFiles, runGit } from '../git.js';
 import { searchConfig } from './config.js';
 import { globRank, parseQuery, regexRank } from './query.js';
-import { definitionInfo } from './definitions.js';
+import { definitionInfo, kconfigSymbolInfo } from './definitions.js';
 import { compareResults, fileMatchRank, matchLabel, matchRank } from './ranking.js';
 import {
   dedupeHeaderPrototypes,
@@ -75,9 +75,23 @@ function looksLikeDefinitionLine(text) {
   return true;
 }
 
+// 扩展名集合只从 `*.ext` 形态的 glob 派生（`*Kconfig*` 不是扩展名），
+// 供"改动文件补扫"判断源码文件用。
 const SOURCE_EXTENSIONS = new Set(
-  searchConfig.sourceGlobs.map((glob) => glob.replace(/^\*\./, '').toLowerCase()),
+  searchConfig.sourceGlobs
+    .filter((glob) => glob.startsWith('*.'))
+    .map((glob) => glob.replace(/^\*\./, '').toLowerCase()),
 );
+
+// Kconfig 命名的文件按 config 符号行解析，结果 kind 为 'kconfig'。
+const isKconfigPath = (filePath) => /^Kconfig/.test(path.posix.basename(filePath));
+
+function lineDefinitionInfo(filePath, text) {
+  const kconfig = isKconfigPath(filePath);
+  const info = kconfig ? kconfigSymbolInfo(text) : definitionInfo(text);
+  if (!info) return null;
+  return { ...info, kind: kconfig ? 'kconfig' : 'function' };
+}
 
 function isSourceFile(filePath) {
   const dot = filePath.lastIndexOf('.');
@@ -117,13 +131,13 @@ async function searchFunctionsLive(root, parsed) {
     if (!raw) continue;
     const parsedLine = parseGrepLine(raw);
     if (!parsedLine || !looksLikeDefinitionLine(parsedLine.text)) continue;
-    const info = definitionInfo(parsedLine.text);
+    const info = lineDefinitionInfo(parsedLine.path, parsedLine.text);
     if (!info || !info.name.toLowerCase().includes(lowerQuery)) continue;
     const key = `${parsedLine.path}:${parsedLine.line}`;
     if (results.has(key)) continue;
     const rank = matchRank(info.name, parsed.text);
     results.set(key, {
-      kind: 'function',
+      kind: info.kind,
       name: info.name,
       path: path.normalize(parsedLine.path),
       line: parsedLine.line,

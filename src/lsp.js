@@ -9,7 +9,8 @@ import { promisify } from 'node:util';
 import { AppError } from './errors.js';
 import { listSourceFiles, readSource } from './git.js';
 import { clearCompilationDatabase, prepareCompilationDatabase } from './compile-db.js';
-import { searchSymbolDefinitions } from './symbol-search.js';
+import { kconfigCurrent, kconfigValue } from './kconfig.js';
+import { searchSymbolDefinitions, wordAt } from './symbol-search.js';
 
 const execFileAsync = promisify(execFile);
 const REQUEST_TIMEOUT = 60_000;
@@ -347,9 +348,11 @@ class LspSession {
     }
     this.enginesMissing = false;
     const files = await listSourceFiles(this.repository.root);
+    // 用户解析过的架构优先于环境变量/默认值：arm64 树此前被硬编码 x86。
+    const kconfig = await kconfigCurrent(this.repository).catch(() => null);
     for (const engine of engines) {
       try {
-        const database = await prepareCompilationDatabase(this.repository.root, files, this.repository.id);
+        const database = await prepareCompilationDatabase(this.repository.root, files, this.repository.id, { arch: kconfig?.arch });
         const { args, initializationOptions } = engineArgs(engine, database);
         this.client = new LspClient(engine.command, args).start();
         const rootUri = pathToFileUri(this.repository.root);
@@ -488,14 +491,40 @@ export function lspPrewarm(repository, body) {
   session.prewarm(body.path, body.content);
 }
 
+// 光标所在标识符（content 缺省时回源码盘读一次）。
+async function wordForPosition(repository, body) {
+  try {
+    let text = body.content;
+    if (typeof text !== 'string') text = (await readSource(repository.root, body.path)).content;
+    return wordAt(text, body.line, body.character);
+  } catch {
+    return null;
+  }
+}
+
+// 取值信息：已解析返回 {symbol, value, arch, defconfig}，未解析返回 {symbol, resolved:false}。
+async function configInfoFor(repository, word) {
+  const value = await kconfigValue(repository, word).catch(() => null);
+  if (value) return value;
+  return { symbol: word.replace(/^CONFIG_/, ''), resolved: false };
+}
+
 export async function lspGotoDefinition(repository, body) {
   const session = sessionFor(repository);
   let lspError = null;
   let locations = [];
-  try {
-    locations = await session.gotoDefinition(body.path, body.line, body.character, body.content);
-  } catch (error) {
-    lspError = error;
+  // CONFIG_* 是 Kconfig 符号：clangd 最多指向生成的 autoconf.h（gitignored，
+  // 编辑器打不开），直接走文本回退定位 Kconfig 源定义，并附带解析取值。
+  const configWord = await wordForPosition(repository, body);
+  const configInfo = configWord && /^CONFIG_[A-Z0-9_]+$/.test(configWord)
+    ? await configInfoFor(repository, configWord)
+    : null;
+  if (!configInfo) {
+    try {
+      locations = await session.gotoDefinition(body.path, body.line, body.character, body.content);
+    } catch (error) {
+      lspError = error;
+    }
   }
   if (locations.length) return { locations };
   let fallback = [];
@@ -512,10 +541,10 @@ export async function lspGotoDefinition(repository, body) {
   }
   if (fallback.length) {
     if (lspError) console.error('[lsp] 定义请求失败，已回退到文本检索：', lspError?.message || lspError);
-    return { locations: fallback };
+    return configInfo ? { locations: fallback, config: configInfo } : { locations: fallback };
   }
   if (lspError) throw lspError;
-  return { locations };
+  return configInfo ? { locations: [], config: configInfo } : { locations };
 }
 
 export async function lspReferences(repository, body) {

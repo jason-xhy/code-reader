@@ -80,9 +80,15 @@ import { initSearchFeature, openWorkspaceSearch } from './features/search.js';
 import { initShortcuts } from './features/shortcuts.js';
 import {
   initSettingsMenu,
+  registerKernelConfigOpener,
   registerLlmSettingsOpener,
   updateSettingsLlmStatus,
 } from './features/settings-menu.js';
+import {
+  initKernelConfig,
+  openKernelConfigDialog,
+  refreshKernelStatus,
+} from './features/kernel-config.js';
 
 // v2：本地主题成为默认选项后重置旧版本保存的配色选择，避免历史
 // localStorage（多为早期 one-dark）压过「默认本地」。用户重新选择后照常持久化。
@@ -191,6 +197,8 @@ function applyRepositoryPayload(data, { collapsed = null, branches = [], prepare
   state.filesLower = prepared?.filesLower || data.files.map((filePath) => filePath.toLowerCase());
   state.fileSet = prepared?.fileSet || new Set(data.files);
   state.status = data.status || {};
+  // 设置菜单的内核配置状态行随仓库刷新（取值解析按仓库独立保存）。
+  refreshKernelStatus();
   state.tree = prepared?.tree || buildTree(data.files);
   const storedCollapsed = collapsed || restoreCollapsed();
   state.collapsed = storedCollapsed || new Set();
@@ -344,6 +352,8 @@ initEditorModeFeature();
 initDialogsFeature({ loadRepository });
 initKeymapFeature();
 initSettingsMenu();
+initKernelConfig();
+registerKernelConfigOpener(openKernelConfigDialog);
 initWorkspaceFeature({ loadRepository, selectFile, applyRepositoryPayload, renderSource, closeNvim });
 initSearchFeature({ jumpTo });
 const { keyboardNav, vimNav } = initShortcuts();

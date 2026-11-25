@@ -224,6 +224,13 @@ export async function jumpTo(location, pushCurrent = true) {
   pushReadingTrail(location);
 }
 
+// Kconfig 取值提示：解析过显示当前值，未解析提示去设置里解析。
+function configStatusText(config) {
+  if (!config) return null;
+  if (config.resolved === false) return `CONFIG_${config.symbol}：未解析取值（设置 → 内核配置）`;
+  return `CONFIG_${config.symbol} = ${config.value} · ${config.arch}/${config.defconfig}`;
+}
+
 export async function gotoDefinition() {
   if (!state.repository || !state.currentFile) return;
   const position = editor.getCursor();
@@ -237,19 +244,25 @@ export async function gotoDefinition() {
         content: editor.getValue(),
       }),
     });
+    const note = configStatusText(data.config);
     if (!data.locations.length) {
-      elements.sourceStatus.textContent = '未找到定义';
+      elements.sourceStatus.textContent = note || '未找到定义';
       return;
     }
     if (data.locations.length === 1) {
       await jumpTo(data.locations[0]);
+      // 跳转加载会覆盖状态栏（renderSource），完成后补写取值提示。
+      if (note) elements.sourceStatus.textContent = note;
       return;
     }
     // 引用/定义列表覆盖代码区，收起两侧悬停面板避免遮住列表。
     window.__crPanels?.hideAll();
     noteFocusIntent();
+    if (note) elements.sourceStatus.textContent = note;
     editor.showQuickpick(data.locations, (picked) => {
-      jumpTo(picked);
+      jumpTo(picked).then(() => {
+        if (note) elements.sourceStatus.textContent = note;
+      });
     });
   } catch (error) {
     elements.sourceStatus.textContent = `跳转失败：${error.message}`;

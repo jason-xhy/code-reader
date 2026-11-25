@@ -17,6 +17,7 @@ import { faqRoutes } from './src/routes/faq.js';
 import { lspRoutes } from './src/routes/lsp.js';
 import { sourceRoutes } from './src/routes/source.js';
 import { searchRoutes } from './src/routes/search.js';
+import { kconfigRoutes } from './src/routes/kconfig.js';
 import { initEditorEnv } from './src/editor-env.js';
 import { attachNvim } from './src/nvim.js';
 
@@ -32,6 +33,7 @@ const handleApi = createRouter([
   lspRoutes,
   sourceRoutes,
   searchRoutes,
+  kconfigRoutes,
 ]);
 
 const server = http.createServer(async (request, response) => {
