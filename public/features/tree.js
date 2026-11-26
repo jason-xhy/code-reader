@@ -441,7 +441,40 @@ function flushTreeFilter() {
 
 function wireTreeEvents() {
   // contenteditable 仅声明这里接管输入（Vimium 据此放行 j/k），树仍是只读数据视图。
-  elements.fileTree.addEventListener('beforeinput', (event) => event.preventDefault());
+  // 输入法直通提交（中文标点 / 全角字符不经组字直接 insertText）：还原成对应
+  // ASCII 命令键交给树键处理。中文标点模式下 `/` 提交的是 `、`，不还原的话
+  // 过滤框只能鼠标点击进入（映射与编辑器 IME_PUNCT_KEY 同一套）。
+  const IME_PUNCT_KEYS = new Map([
+    ['、', '/'],
+    ['。', '.'],
+    ['￥', '$'],
+    ['《', '<'],
+    ['》', '>'],
+    ['·', '`'],
+  ]);
+  function treeCommandFromCommit(data) {
+    if (typeof data !== 'string' || data.length !== 1) return null;
+    const code = data.charCodeAt(0);
+    // 半角直通字符的 keydown 已被树键处理消费（preventDefault 后不会再有
+    // beforeinput），这里再派发会造成同一键双触发。
+    if (code >= 0x20 && code <= 0x7e) return null;
+    if (code >= 0xff01 && code <= 0xff5e) return String.fromCharCode(code - 0xfee0);
+    return IME_PUNCT_KEYS.get(data) || null;
+  }
+  elements.fileTree.addEventListener('beforeinput', (event) => {
+    event.preventDefault();
+    const key = event.inputType === 'insertText' ? treeCommandFromCommit(event.data) : null;
+    if (!key) return;
+    handleTreeKeydown({
+      key,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      shiftKey: false,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+  });
   elements.fileTree.addEventListener('paste', (event) => event.preventDefault());
   elements.fileTree.addEventListener('drop', (event) => event.preventDefault());
   elements.treeFilter.addEventListener('input', () => {
@@ -455,9 +488,34 @@ function wireTreeEvents() {
       renderTree();
     }, 120);
   });
-  // 过滤框内直接键盘导航：↑/↓ 选择候选，Enter 打开。
+  // 过滤框内直接键盘导航：↑/↓ 或 Ctrl+j/k 选择候选，Enter 打开，Tab 回树内。
   elements.treeFilter.addEventListener('keydown', (event) => {
     if (event.isComposing || event.keyCode === 229) return;
+    // Ctrl+j / Ctrl+k：字符键仍是过滤词，选择走组合键（与引用/搜索窗口的
+    // 输入框约定一致——不能劫持裸 j/k，kernel/jbd2 这类文件名含这些字母）。
+    if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'j' || event.key === 'k')) {
+      if (!elements.treeFilter.value.trim()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      flushTreeFilter();
+      const matches = state.filterMatches;
+      if (!matches.length) return;
+      const delta = event.key === 'j' ? 1 : -1;
+      if (state.filterIndex < 0) state.filterIndex = delta > 0 ? 0 : matches.length - 1;
+      else state.filterIndex = (state.filterIndex + delta + matches.length) % matches.length;
+      updateFilterFocus();
+      return;
+    }
+    // Tab：保留过滤条件把焦点送回树内，用完整 Vim 键（j/k/gg/G…）选择；
+    // Esc 仍是清空过滤并退出。
+    if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      if (!elements.treeFilter.value.trim()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      flushTreeFilter();
+      if (!focusTree()) elements.fileTree.focus({ preventScroll: true });
+      return;
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     // Esc 退出过滤：清空过滤条件并回到文件树。
     if (event.key === 'Escape') {
@@ -495,7 +553,10 @@ function wireTreeEvents() {
 
   let typePrefix = "", typeTime = 0;
   function handleTreeKeydown(event) {
-    if (event.isComposing || event.keyCode === 229) return;
+    // isComposing = 组字进行中（键属于输入法）；keyCode 229（Process）不再早退：
+    // fcitx 透传英文时 keydown 也可能带 229 而 key 仍是真实字母；key 为
+    // 'Process' 时不会命中任何命令分支，无副作用。
+    if (event.isComposing) return;
     let rows = treeRows();
     if (!rows.length && event.key !== 'Escape' && event.key !== 'q') return;
     if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {

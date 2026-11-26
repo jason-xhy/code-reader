@@ -24,7 +24,7 @@
       </div>
       <div class="sidebar-tools">
         <label class="search-label" for="tree-filter">代码树</label>
-        <input id="tree-filter" type="search" placeholder="过滤文件…" autocomplete="off" disabled title="过滤后 ↑/↓ 选择候选，Enter 打开；只有一个候选时直接回车打开">
+        <input id="tree-filter" type="search" placeholder="过滤文件…" autocomplete="off" disabled title="过滤后 ↑/↓ 或 Ctrl+j/k 选择候选，Enter 打开，Tab 回树内用 j/k 选择；只有一个候选时直接回车打开">
       </div>
       <!-- 标记为键盘输入宿主，让 Vimium 等扩展将按键交给文件树；beforeinput 禁止改写 DOM。 -->
       <nav id="file-tree" class="file-tree" aria-label="代码树" tabindex="0" contenteditable="true" spellcheck="false" inputmode="none">
@@ -461,7 +461,7 @@
       </section>
       <section>
         <h3>全键盘导航</h3>
-        <p>所有 <kbd>Ctrl+Alt+X</kbd> 组合键同时接受 <kbd>Ctrl+Alt+Shift+X</kbd> 备用键（macOS 另接受 <kbd>⌘+Option+X</kbd>）；被输入法/桌面抢走的组合键可在顶栏「设置 → 快捷键」改绑。输入法组字（拼音预编辑）在 NORMAL 模式不会写入文档，也不会被当成 vim 命令——需要输入文字先按 <kbd>i</kbd> 进入 INSERT。<kbd>Ctrl+Alt+B</kbd>/<kbd>Ctrl+Alt+I</kbd> 是「去代码树/去解释窗口」：面板已开但焦点在代码区时按一下把焦点送进去，焦点已在面板内时再按才收起。任意窗口（含对话框、提交详情、解释栏、代码树、引用列表）都支持完整 Vim 导航：<kbd>j</kbd>/<kbd>k</kbd> 在可操作项之间移动或逐行滚动，可带计数（<kbd>5j</kbd>）；函数提交历史、解释栏等列表容器里 <kbd>j</kbd>/<kbd>k</kbd> 直接在提交/条目之间移动；<kbd>Ctrl+d</kbd>/<kbd>Ctrl+u</kbd> 半屏、<kbd>Ctrl+f</kbd>/<kbd>Ctrl+b</kbd>/<kbd>PageDown</kbd>/<kbd>PageUp</kbd> 整屏，阅读区还可用 <kbd>Space</kbd>/<kbd>Shift+Space</kbd>；<kbd>gg</kbd>/<kbd>G</kbd> 首个/最后一个目标（<kbd>12gg</kbd>/<kbd>12G</kbd> 跳到第 12 个），<kbd>H</kbd>/<kbd>M</kbd>/<kbd>L</kbd> 首/中/末（阅读区为顶部/中部/底部），<kbd>0</kbd>/<kbd>^</kbd>/<kbd>$</kbd> 首/末项（阅读区横向滚到最左/最右），<kbd>o</kbd> 激活当前项（<kbd>Enter</kbd> 走浏览器原生）；<kbd>/</kbd> 在当前窗口内搜索，<kbd>Enter</kbd> 定位、<kbd>n</kbd>/<kbd>N</kbd> 下一个/上一个、<kbd>Esc</kbd> 清除高亮。解释栏里先 <kbd>Tab</kbd> 或点击链接进入项列表模式，<kbd>Esc</kbd> 退回阅读模式；文件树里 <kbd>/</kbd> 直接跳到过滤框。任意窗口按 <kbd>Ctrl+Alt+K</kbd> 出现字母标签（代码区按行打标签，输入标签即跳到该行；其它元素输入标签即点击/聚焦）；按 <kbd>Ctrl+Alt+F</kbd> 输入两个字符，匹配处出现标签，输入标签即跳转。标签层自动限定在当前顶层窗口，不会点到遮罩后面的元素；打开侧栏/对话框后焦点自动跟进；历史菜单/文件树右键菜单支持 ↑/↓ + Enter，Esc 返回；分隔条聚焦后 ←/→ 调整宽度。</p>
+        <p>所有 <kbd>Ctrl+Alt+X</kbd> 组合键同时接受 <kbd>Ctrl+Alt+Shift+X</kbd> 备用键（macOS 另接受 <kbd>⌘+Option+X</kbd>）；被输入法/桌面抢走的组合键可在顶栏「设置 → 快捷键」改绑。输入法组字（拼音预编辑）在 NORMAL 模式不会写入文档，也不会被当成 vim 命令——需要输入文字先按 <kbd>i</kbd> 进入 INSERT。<kbd>Ctrl+Alt+B</kbd>/<kbd>Ctrl+Alt+I</kbd> 是「去代码树/去解释窗口」：面板已开但焦点在代码区时按一下把焦点送进去，焦点已在面板内时再按才收起。任意窗口（含对话框、提交详情、解释栏、代码树、引用列表）都支持完整 Vim 导航：<kbd>j</kbd>/<kbd>k</kbd> 在可操作项之间移动或逐行滚动，可带计数（<kbd>5j</kbd>）；函数提交历史、解释栏等列表容器里 <kbd>j</kbd>/<kbd>k</kbd> 直接在提交/条目之间移动；<kbd>Ctrl+d</kbd>/<kbd>Ctrl+u</kbd> 半屏、<kbd>Ctrl+f</kbd>/<kbd>Ctrl+b</kbd>/<kbd>PageDown</kbd>/<kbd>PageUp</kbd> 整屏，阅读区还可用 <kbd>Space</kbd>/<kbd>Shift+Space</kbd>；<kbd>gg</kbd>/<kbd>G</kbd> 首个/最后一个目标（<kbd>12gg</kbd>/<kbd>12G</kbd> 跳到第 12 个），<kbd>H</kbd>/<kbd>M</kbd>/<kbd>L</kbd> 首/中/末（阅读区为顶部/中部/底部），<kbd>0</kbd>/<kbd>^</kbd>/<kbd>$</kbd> 首/末项（阅读区横向滚到最左/最右），<kbd>o</kbd> 激活当前项（<kbd>Enter</kbd> 走浏览器原生）；<kbd>/</kbd> 在当前窗口内搜索，<kbd>Enter</kbd> 定位、<kbd>n</kbd>/<kbd>N</kbd> 下一个/上一个、<kbd>Esc</kbd> 清除高亮。解释栏里先 <kbd>Tab</kbd> 或点击链接进入项列表模式，<kbd>Esc</kbd> 退回阅读模式；文件树里 <kbd>/</kbd> 直接跳到过滤框（中文输入法下 <kbd>、</kbd> 同效），过滤框内 <kbd>↑</kbd>/<kbd>↓</kbd> 或 <kbd>Ctrl+j</kbd>/<kbd>Ctrl+k</kbd> 选候选、<kbd>Tab</kbd> 回树内用 <kbd>j</kbd>/<kbd>k</kbd> 选择。任意窗口按 <kbd>Ctrl+Alt+K</kbd> 出现字母标签（代码区按行打标签，输入标签即跳到该行；其它元素输入标签即点击/聚焦）；按 <kbd>Ctrl+Alt+F</kbd> 输入两个字符，匹配处出现标签，输入标签即跳转。标签层自动限定在当前顶层窗口，不会点到遮罩后面的元素；打开侧栏/对话框后焦点自动跟进；历史菜单/文件树右键菜单支持 ↑/↓ + Enter，Esc 返回；分隔条聚焦后 ←/→ 调整宽度。</p>
       </section>
       <section class="vim-help-note">
         <h3>浏览器限制</h3>
