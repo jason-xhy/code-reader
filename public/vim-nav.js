@@ -333,7 +333,11 @@ export function createVimNav() {
   }
 
   function handleKeydown(event) {
-    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return false;
+    // isComposing = 组字进行中（键属于输入法）；keyCode 229（Process）不再早退：
+    // fcitx 透传英文时 keydown 也可能带 229 而 key 仍是真实字母（树侧 tree.js
+    // 已同款修复），否则解释栏/历史/菜单/阅读路径的 j/k/gg/G 在输入法开启时
+    // 全部失效。key 为 'Process' 时不会命中任何命令分支，无副作用。
+    if (event.defaultPrevented || event.isComposing) return false;
     const target = event.target;
     if (!(target instanceof Element)) return false;
     if (target.closest('.vim-search')) return false;

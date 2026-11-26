@@ -9,14 +9,11 @@ export function isEditableTarget(target) {
 }
 
 // 顶层弹层在场时，后台快捷键（如 Ctrl+Alt+B）不应抢焦点。
+// 消费方（shortcuts.js 捕获层、search.js openWorkspaceSearch）各自结合
+// defaultPrevented/isComposing/repeat 判断，不再提供聚合函数。
 export function topLayerOpen() {
   return Boolean(document.querySelector('dialog[open]'))
     || !elements.commitOverlay.hidden
     || !elements.animationOverlay.hidden
     || state.animationOpen;
-}
-
-// 全局组合键统一走这里：忽略输入法组合、重复按键和顶层弹层。
-export function shortcutAllowed(event) {
-  return !event.isComposing && !event.repeat && !topLayerOpen();
 }

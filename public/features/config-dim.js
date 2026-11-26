@@ -111,19 +111,31 @@ function literalValue(token, values) {
 }
 
 // 三值逻辑：!、&&（任一假即假）、||（任一真即真）、比较（任一 unknown 即 unknown）。
+// 字面量层会给 &&/|| 喂 0/1 数字（裸 CONFIG_X、y/n 字面量）：必须先归一成布尔，
+// 否则 0 绕不过 `=== false`（`#if CONFIG_X && …`（X=n）误判为真 → 漏灰），而
+// `||` 方向 1 绕不过 `=== true`（`#if CONFIG_X || …`（X=y）误判为假 → 误灰活分支）。
+// 比较运算要保留数字原值（`CONFIG_NUM == 64`），归一只能放在逻辑运算入口。
+function asLogicValue(value) {
+  return value === null ? null : Boolean(value);
+}
+
 function notOf(value) {
   return value === null ? null : !value;
 }
 
 function andOf(left, right) {
-  if (left === false || right === false) return false;
-  if (left === null || right === null) return null;
+  const l = asLogicValue(left);
+  const r = asLogicValue(right);
+  if (l === false || r === false) return false;
+  if (l === null || r === null) return null;
   return true;
 }
 
 function orOf(left, right) {
-  if (left === true || right === true) return true;
-  if (left === null || right === null) return null;
+  const l = asLogicValue(left);
+  const r = asLogicValue(right);
+  if (l === true || r === true) return true;
+  if (l === null || r === null) return null;
   return false;
 }
 
@@ -275,27 +287,30 @@ function logicalLines(lines) {
 }
 
 // 分支栈（只有能判定的分支才置灰，宁可漏灰不误灰）：
-// - #if expr：值为假 → 本分支置灰到下一分支指令前；值 unknown 不置灰；
-// - #elif expr：本分支值为假 → 置灰（无论真假，该分支都必不编译）；值为
-//   unknown 不置灰——即使链上已有确定为真的分支，也保守放过（printk.h 的
-//   `#elif defined(DEBUG)`：DEBUG 非 kconfig 符号，不灰）；
+// - #if expr：值为假 → 本分支置灰到下一同级分支指令前；值 unknown 不置灰；
+// - #elif expr：链上已有确定为真的分支（satisfied）或本分支值为假 → 置灰
+//   （与 #else 对称：链上已满足后任何分支都必不编译）；值 unknown 且链上
+//   未满足不置灰（printk.h 的 `#elif defined(DEBUG)`：DEBUG 非 kconfig 符号）；
 // - #else：链上已有确定为真的分支（satisfied）→ 置灰；否则（含 #if unknown）不置灰；
-// - 父级已在置灰区间内时，内层分支不再单独置灰（外层区间已覆盖）。
+// - 嵌套指令属于内层组：外层分支的置灰区间不被内层 #if/#endif 截断（分支
+//   状态随栈帧保存，#endif 后外层继续），整个内层组都在外层区间内；外层
+//   分支正在置灰时内层分支不再单独置灰（外层区间已覆盖）。
 // 返回 [{ from, to }]（1 基行号、闭区间）。
 export function computeInactiveRanges(content, values) {
   const lines = String(content || '').split('\n');
   const entries = logicalLines(lines);
   const ranges = [];
-  // 栈元素：{ inactive: 整组处于已置灰区间, satisfied: 链上已有确定为真的分支 }。
+  // 栈帧：{ inactive: 整组处于已置灰的祖先分支, satisfied: 链上已有确定为真
+  // 的分支, current: 本组当前分支的置灰区间 }。current 随帧保存——内层
+  // 指令不再共用单一全局状态，外层假分支不会在第一个内层指令处被丢弃。
   const stack = [];
-  let current = null;
 
-  // 结束当前分支：endLine 为分支最后一行的行号（1 基）。
-  const closeBranch = (endLine) => {
-    if (current && current.dim && endLine >= current.start) {
-      ranges.push({ from: current.start, to: endLine });
+  // 结束指定帧的当前分支：endLine 为分支最后一行的行号（1 基）。
+  const closeBranch = (frame, endLine) => {
+    if (frame.current && frame.current.dim && endLine >= frame.current.start) {
+      ranges.push({ from: frame.current.start, to: endLine });
     }
-    current = null;
+    frame.current = null;
   };
 
   for (const entry of entries) {
@@ -306,8 +321,9 @@ export function computeInactiveRanges(content, values) {
     // entry.start 是指令首行下标（0 基）＝上一分支最后一行的行号（1 基）。
     const previousBranchEnd = entry.start;
     if (keyword === 'if' || keyword === 'ifdef' || keyword === 'ifndef') {
-      closeBranch(previousBranchEnd);
-      const parent = stack[stack.length - 1] || { inactive: false, satisfied: false };
+      // 注意：这里不 close 父帧的 current——内层组整体落在父分支区间内，
+      // 由父帧在下一个同级指令处统一收口。
+      const parent = stack[stack.length - 1] || { inactive: false, current: null };
       let value = null;
       if (keyword === 'if') {
         value = evaluateExpression(expression, values);
@@ -316,26 +332,37 @@ export function computeInactiveRanges(content, values) {
         const defined = name ? definedTest(name, values) : null;
         value = keyword === 'ifndef' ? notOf(defined) : defined;
       }
-      stack.push({ inactive: parent.inactive, satisfied: value === true });
-      current = { start: entry.start + 1, dim: !parent.inactive && value === false };
+      // 外层分支正在置灰（父帧 current.dim）→ 内层组整组并入外层区间。
+      const covered = parent.inactive || Boolean(parent.current?.dim);
+      stack.push({
+        inactive: covered,
+        satisfied: value === true,
+        current: { start: entry.start + 1, dim: !covered && value === false },
+      });
     } else if (keyword === 'elif') {
-      closeBranch(previousBranchEnd);
       const group = stack[stack.length - 1];
       if (!group) continue;
+      closeBranch(group, previousBranchEnd);
       const value = evaluateExpression(expression, values);
+      // 先用更新前的 satisfied 算 dim（本分支自身为真不算「链上已满足」），
+      // 再把本分支的真空入 satisfied 供后续 #elif/#else 使用。
+      const dim = !group.inactive && (group.satisfied || value === false);
       if (value === true) group.satisfied = true;
-      current = { start: entry.start + 1, dim: !group.inactive && value === false };
+      group.current = { start: entry.start + 1, dim };
     } else if (keyword === 'else') {
-      closeBranch(previousBranchEnd);
       const group = stack[stack.length - 1];
       if (!group) continue;
-      current = { start: entry.start + 1, dim: !group.inactive && group.satisfied };
+      closeBranch(group, previousBranchEnd);
+      group.current = { start: entry.start + 1, dim: !group.inactive && group.satisfied };
     } else if (keyword === 'endif') {
-      closeBranch(previousBranchEnd);
+      const group = stack[stack.length - 1];
+      if (!group) continue;
+      closeBranch(group, previousBranchEnd);
       stack.pop();
     }
   }
-  closeBranch(lines.length);
+  // 文件结尾未闭合的组（缺 #endif）：从内向外逐帧收口，外层区间覆盖到底。
+  for (const frame of stack.slice().reverse()) closeBranch(frame, lines.length);
   return ranges;
 }
 

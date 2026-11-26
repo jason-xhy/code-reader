@@ -4,7 +4,7 @@ import { createKeyboardNav } from '../keyboard-nav.js';
 import { createVimNav } from '../vim-nav.js';
 import { elements } from '../core/dom.js';
 import { state, editor } from '../core/state.js';
-import { isEditableTarget } from '../core/policies.js';
+import { isEditableTarget, topLayerOpen } from '../core/policies.js';
 import { matchAction, matchesAction } from '../core/keymap.js';
 import { activateWorkspaceByIndex, activateWorkspaceByOffset } from './workspace.js';
 import {
@@ -53,6 +53,11 @@ export function initShortcuts() {
   // 捕获阶段消费事件：否则 CodeMirror / xterm 会先把组合键当成输入。
   document.addEventListener('keydown', (event) => {
     if (event.defaultPrevented || event.isComposing || event.repeat) return;
+    // 顶层弹层（模态对话框/提交详情/动画）在场时全局组合键让路，与
+    // search.js openWorkspaceSearch 同一语义：不在弹层背后开侧栏/切模式/
+    // 切仓（焦点被 showModal 圈住，但面板状态会被背后改变）。Esc 关闭
+    // 弹层的处理在冒泡层，不受此门禁影响。
+    if (topLayerOpen()) return;
     const action = matchAction(event);
     if (!action) return;
     let handled = true;

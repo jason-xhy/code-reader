@@ -570,20 +570,26 @@ export async function lspReferences(repository, body) {
   } catch {
     textLocations = [];
   }
-  // 合并去重：LSP 优先（位置更准），文本结果按 path:line 补差集。
-  const seen = new Set();
+  // 合并去重：LSP 优先（位置更准）。LSP 自身按 path:line:character 精确去重
+  // ——clangd 对同一行两处引用各返回一个 Location，按行折叠会丢列（用户站在
+  // 第二处引用上查询，结果却只指向第一处）。文本兜底仍按 path:line 补差集：
+  // 文本结果的 character 落在本行第一个词匹配处，与 LSP 的精确列不是同一语义，
+  // 不能按列比对；该行已有 LSP 命中即整行让位（LSP 优先），只补 LSP 漏掉的行。
+  const seenLines = new Set();
+  const seenExact = new Set();
   const locations = [];
   for (const location of lspLocations) {
-    const key = `${location.path}:${location.line}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const exact = `${location.path}:${location.line}:${location.character}`;
+    if (seenExact.has(exact)) continue;
+    seenExact.add(exact);
+    seenLines.add(`${location.path}:${location.line}`);
     locations.push(location);
   }
   const before = locations.length;
   for (const location of textLocations) {
     const key = `${location.path}:${location.line}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (seenLines.has(key)) continue;
+    seenLines.add(key);
     locations.push(location);
   }
   const textExtra = locations.length - before;

@@ -374,7 +374,11 @@ export async function parseKconfigTree(root, { arch = '' } = {}) {
       const stripped = stripComment(joined).replace(/\r$/, '');
       const trailing = /(\\+)\s*$/.exec(stripped);
       if (!inHelp && trailing && trailing[1].length % 2 === 1) {
-        joined = joined.slice(0, joined.length - trailing[0].length);
+        // 剥离必须在 stripped 上匹配并按 stripped 切片：原始 joined 尾部可能带
+        // CRLF 的 \r 或 `X \ # 注释` 的注释文本，按原始长度切片会删错字符，
+        // 反斜杠/注释残片留在拼接行里导致表达式解析失败（依赖条件静默丢失）。
+        // processLine 入口本就会再做一次注释/\r 剥离，提前替换无副作用。
+        joined = stripped.slice(0, stripped.length - trailing[0].length);
         continue;
       }
       await processLine(joined, `${relative}:${joinedStart + 1}`, absolute, relative);

@@ -12,7 +12,11 @@ export function integerParam(value, { name = '行号', code = 'INVALID_LINE' } =
 export function characterParam(value, { name = '列号', code = 'INVALID_CHARACTER' } = {}) {
   const text = String(value ?? 0);
   if (!/^\d+$/.test(text)) throw new AppError(`${name}必须是非负整数`, 400, code);
-  return Number(text);
+  const number = Number(text);
+  // 与 integerParam 对齐：超出安全整数范围的列号在校验层拒绝（400），
+  // 不能穿透到 clangd（位置解码失败只会变成 502 LSP_ERROR）。
+  if (!Number.isSafeInteger(number)) throw new AppError(`${name}无效`, 400, code);
+  return number;
 }
 
 export function pathParam(value) {
